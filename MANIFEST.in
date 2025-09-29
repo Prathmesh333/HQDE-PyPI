@@ -1,0 +1,6 @@
+include README.md
+include LICENSE
+include hqde/py.typed
+recursive-include hqde *.py
+recursive-exclude * __pycache__
+recursive-exclude * *.py[co]

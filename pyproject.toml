@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hqde"
+version = "0.1.0"
+description = "Hierarchical Quantum-Distributed Ensemble Learning Framework"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "HQDE Team", email = "hqde@example.com"}
+]
+maintainers = [
+    {name = "HQDE Team", email = "hqde@example.com"}
+]
+keywords = ["machine-learning", "quantum", "distributed", "ensemble", "deep-learning", "pytorch", "ray"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=2.0.2",
+    "torch>=2.8.0",
+    "torchvision>=0.23.0",
+    "ray[default]>=2.49.2",
+    "scikit-learn>=1.6.1",
+    "psutil>=7.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.4.2",
+    "ipython>=8.18.1",
+    "matplotlib>=3.9.4",
+    "pandas>=2.3.2",
+    "seaborn>=0.13.2",
+    "tqdm>=4.67.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/Prathmesh333/Hierarchical-Quantum-Distributed-Ensemble-Learning"
+Repository = "https://github.com/Prathmesh333/Hierarchical-Quantum-Distributed-Ensemble-Learning"
+Documentation = "https://github.com/Prathmesh333/Hierarchical-Quantum-Distributed-Ensemble-Learning/blob/main/HOW_TO_RUN.md"
+"Bug Reports" = "https://github.com/Prathmesh333/Hierarchical-Quantum-Distributed-Ensemble-Learning/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["hqde*"]
+exclude = ["data*", "logs*", "checkpoints*", "examples*", "docs*"]
+
+[tool.setuptools.package-data]
+hqde = ["py.typed"]
