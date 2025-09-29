@@ -285,8 +285,8 @@ If you use HQDE in your research, please cite:
 ```bibtex
 @misc{hqde2024,
   title={HQDE: Hierarchical Quantum-Distributed Ensemble Learning Framework},
-  author={HQDE Team},
-  year={2024},
+  author={Prathamesh Nikam},
+  year={2025},
   url={https://github.com/Prathmesh333/Hierarchical-Quantum-Distributed-Ensemble-Learning},
   note={Framework for quantum-inspired distributed ensemble learning}
 }
@@ -333,7 +333,7 @@ This project is licensed under the **MIT License** - feel free to use, modify, a
 - **Ray Team** for distributed computing framework
 - **PyTorch Community** for deep learning infrastructure
 - **Quantum ML Research Community** for theoretical foundations
-- **Claude Code** for implementation assistance
+
 
 ## 📞 Contact & Support
 
@@ -352,7 +352,7 @@ This project is licensed under the **MIT License** - feel free to use, modify, a
 - **🐛 [Bug Reports](https://github.com/Prathmesh333/Hierarchical-Quantum-Distributed-Ensemble-Learning/issues)**: Found a bug? Let us know!
 - **💡 [Feature Requests](https://github.com/Prathmesh333/Hierarchical-Quantum-Distributed-Ensemble-Learning/issues)**: Have an idea? We'd love to hear it!
 - **💬 [Community Q&A](https://github.com/Prathmesh333/Hierarchical-Quantum-Distributed-Ensemble-Learning/issues?q=label%3Aquestion)**: Ask questions, share insights
-- **📧 **Email**: Contact via GitHub Issues for fastest response
+- **📧** **Email**: Contact via GitHub Issues for fastest response
 
 ### 🔄 Stay Updated
 
