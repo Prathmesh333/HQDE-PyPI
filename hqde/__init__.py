@@ -5,7 +5,7 @@ A comprehensive framework for distributed ensemble learning with quantum-inspire
 algorithms, adaptive quantization, and efficient hierarchical aggregation.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 __author__ = "HQDE Team"
 
 # Core components
