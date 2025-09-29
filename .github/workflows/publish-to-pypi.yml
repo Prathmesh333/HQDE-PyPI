@@ -28,7 +28,7 @@ jobs:
 
     - name: Run tests
       run: |
-        python test_pypi_installation.py
+        python test_imports.py
 
   build:
     needs: test
