@@ -1,0 +1,11 @@
+﻿ M examples/cifar10_synthetic_test.py
+ M examples/cifar10_test.py
+ M hqde/__main__.py
+ M hqde/core/hqde_system.py
+?? FINAL_STATUS_REPORT.md
+?? HQDE_Test_Notebook.ipynb
+?? HQDE_Test_Notebook_Clean.ipynb
+?? HQDE_Test_Notebook_Fixed.ipynb
+?? notebook_test.py
+?? status.txt
+?? test_fixes.py
