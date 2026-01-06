@@ -153,7 +153,11 @@ class DistributedEnsembleManager:
 
     def create_ensemble_workers(self, model_class, model_kwargs: Dict[str, Any]):
         """Create distributed ensemble workers."""
-        @ray.remote
+        # Calculate GPU fraction per worker (divide available GPUs among workers)
+        num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        gpu_per_worker = num_gpus / self.num_workers if num_gpus > 0 else 0
+        
+        @ray.remote(num_gpus=gpu_per_worker)
         class EnsembleWorker:
             def __init__(self, model_class, model_kwargs):
                 self.model = model_class(**model_kwargs)
