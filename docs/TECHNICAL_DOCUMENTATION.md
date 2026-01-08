@@ -368,7 +368,7 @@ L2 │Agg-3 │     │Agg-4 │   │Agg-5 │     │Agg-6 │
    └─────┘     └─────┘    └─────┘     └─────┘
 ```
 
-**Communication Complexity**: O(log n) - very efficient!
+**Communication Complexity**: O(log n)
 
 ### 3.4 Byzantine Fault Tolerance
 
