@@ -65,7 +65,7 @@ class EnsembleWorker:  # Inside each Ray worker
         )
 ```
 
-**Location 2: Weight Aggregation (Meta-Learning) - 🆕 ENHANCED in v0.1.5**
+**Location 2: Weight Aggregation (Meta-Learning) - ENHANCED in v0.1.5**
 
 [hqde_system.py L234-260](file:///d:/MTech%202nd%20Year/hqde/HQDE-PyPI/hqde/core/hqde_system.py#L234-260)
 
@@ -84,7 +84,7 @@ def aggregate_weights(self) -> Dict[str, torch.Tensor]:
     for param_name in param_names:
         param_tensors = [weights[param_name] for weights in all_weights]
         
-        # 🆕 v0.1.5: FedAvg-style averaging (uniform meta-weights)
+    # v0.1.5: FedAvg-style averaging (uniform meta-weights)
         # This enables knowledge sharing across workers
         stacked_params = torch.stack(param_tensors)
         aggregated_param = stacked_params.mean(dim=0)
@@ -94,7 +94,7 @@ def aggregate_weights(self) -> Dict[str, torch.Tensor]:
     return aggregated_weights
 
 def broadcast_weights(self, aggregated_weights: Dict[str, torch.Tensor]):
-    """🆕 v0.1.5: Broadcast aggregated weights back to all workers."""
+    """v0.1.5: Broadcast aggregated weights back to all workers."""
     broadcast_futures = []
     for worker in self.workers:
         future = worker.set_weights.remote(aggregated_weights)
@@ -124,7 +124,7 @@ def predict(self, data_loader):
             predictions.append(ensemble_prediction)
 ```
 
-### Meta-Learning Flow Diagram - 🆕 UPDATED for v0.1.5
+### Meta-Learning Flow Diagram - UPDATED for v0.1.5
 
 ```
 TRAINING PHASE (with FedAvg):
@@ -146,13 +146,13 @@ TRAINING PHASE (with FedAvg):
 │                     │                                                │
 │                     ▼                                                │
 │            ┌────────────────────┐                                    │
-│            │  AGGREGATE (FedAvg)│  🆕 v0.1.5                         │
+│            │  AGGREGATE (FedAvg)│  v0.1.5                         │
 │            │  avg_wts = mean()  │                                    │
 │            └─────────┬──────────┘                                    │
 │                      │                                               │
 │                      ▼                                               │
 │            ┌────────────────────┐                                    │
-│            │  BROADCAST avg_wts │  🆕 v0.1.5                         │
+│            │  BROADCAST avg_wts │  v0.1.5                         │
 │            │  to all workers    │                                    │
 │            └─────────┬──────────┘                                    │
 │                      │                                               │
@@ -460,7 +460,7 @@ def _collect_system_metrics(self) -> SystemMetrics:
 
 ---
 
-### v0.1.5 Specific Questions 🆕
+### v0.1.5 Specific Questions
 
 **Q: What's the main improvement in v0.1.5?**
 > **A:** Enabled FedAvg weight aggregation - workers now share knowledge after each epoch instead of training independently. This was the #1 cause of poor accuracy in v0.1.4.

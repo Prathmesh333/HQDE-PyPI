@@ -95,3 +95,7 @@ hqde_benchmark_results.png
 *.temp
 *.bak
 *.backup
+
+# Temporary documentation and helper scripts
+remove_emojis.py
+EMOJI_REMOVAL_COMPLETE.md

@@ -84,16 +84,16 @@ from hqde import create_hqde_system
 import torch.nn as nn
 
 class MyModel(nn.Module):
-    def __init__(self, num_classes=10, dropout_rate=0.15):  # 🆕 v0.1.5: Add dropout_rate
+    def __init__(self, num_classes=10, dropout_rate=0.15):  # v0.1.5: Add dropout_rate
         super().__init__()
         self.layers = nn.Sequential(
             nn.Conv2d(3, 32, 3, padding=1),
             nn.ReLU(),
-            nn.Dropout(dropout_rate),  # 🆕 v0.1.5: Use dropout_rate parameter
+            nn.Dropout(dropout_rate),  # v0.1.5: Use dropout_rate parameter
             nn.MaxPool2d(2),
             nn.Conv2d(32, 64, 3, padding=1),
             nn.ReLU(),
-            nn.Dropout(dropout_rate),  # 🆕 v0.1.5: Use dropout_rate parameter
+            nn.Dropout(dropout_rate),  # v0.1.5: Use dropout_rate parameter
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
             nn.Linear(64, num_classes)
@@ -111,7 +111,7 @@ hqde_system = create_hqde_system(
     aggregation_config={'noise_scale': 0.005, 'exploration_factor': 0.1}
 )
 
-# Train (🆕 v0.1.5: Use 40+ epochs for complex datasets)
+# Train (v0.1.5: Use 40+ epochs for complex datasets)
 metrics = hqde_system.train(train_loader, num_epochs=40)
 
 # Predict
@@ -241,7 +241,7 @@ ray.init(ignore_reinit_error=True)
 - Reduce `num_workers` to 2
 - Use CPU: set `device = "cpu"`
 
-### v0.1.5 Specific Issues 🆕
+### v0.1.5 Specific Issues
 
 #### Not Seeing Weight Aggregation Messages
 **Problem**: Training runs but no "Weights aggregated and synchronized" messages

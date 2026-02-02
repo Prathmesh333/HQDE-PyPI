@@ -4,13 +4,13 @@ All notable changes to the HQDE project will be documented in this file.
 
 ## [0.1.6] - 2025-02-03
 
-### 🐛 Bug Fixes
+### Bug Fixes
 
 - **Fixed TypeError with models that don't support dropout_rate**
-  - Added parameter inspection to check if model accepts `dropout_rate` before injecting it
-  - Makes v0.1.5 improvements backward compatible with existing models
-  - Models without `dropout_rate` parameter will work fine (just won't get dropout diversity)
-  - Models with `dropout_rate` parameter will get ensemble diversity as intended
+- Added parameter inspection to check if model accepts `dropout_rate` before injecting it
+- Makes v0.1.5 improvements backward compatible with existing models
+- Models without `dropout_rate` parameter will work fine (just won't get dropout diversity)
+- Models with `dropout_rate` parameter will get ensemble diversity as intended
 
 ### Technical Details
 
@@ -20,7 +20,7 @@ The code now uses `inspect.signature()` to check if a model's `__init__` method 
 ```python
 # Always injected dropout_rate, causing errors if model didn't support it
 if 'dropout_rate' not in model_kwargs:
-    model_kwargs['dropout_rate'] = dropout_rate
+model_kwargs['dropout_rate'] = dropout_rate
 ```
 
 **After (v0.1.6):**
@@ -30,7 +30,7 @@ model_init_params = inspect.signature(model_class.__init__).parameters
 supports_dropout = 'dropout_rate' in model_init_params
 
 if supports_dropout and 'dropout_rate' not in worker_model_kwargs:
-    worker_model_kwargs['dropout_rate'] = dropout_rate
+worker_model_kwargs['dropout_rate'] = dropout_rate
 ```
 
 ### Migration
@@ -46,32 +46,32 @@ All v0.1.5 improvements (FedAvg, LR scheduling, gradient clipping) are still act
 
 ## [0.1.5] - 2025-02-03
 
-### 🚀 Major Accuracy Improvements
+### Major Accuracy Improvements
 
 #### Fixed Critical Issues
-- **✅ CRITICAL FIX #1: Enabled Weight Aggregation**
-  - Workers now aggregate and synchronize weights after each epoch (FedAvg style)
-  - Previously, workers trained independently without sharing knowledge
-  - This was the #1 cause of poor accuracy - workers never communicated during training
-  - Expected improvement: +15-20% accuracy on complex datasets
+- **CRITICAL FIX #1: Enabled Weight Aggregation**
+- Workers now aggregate and synchronize weights after each epoch (FedAvg style)
+- Previously, workers trained independently without sharing knowledge
+- This was the #1 cause of poor accuracy - workers never communicated during training
+- Expected improvement: +15-20% accuracy on complex datasets
 
-- **✅ FIX #3: Reduced Dropout for Ensemble Training**
-  - Default dropout reduced from 0.5 to 0.15 for ensemble members
-  - Dropout is redundant when using ensembles (ensemble itself provides regularization)
-  - Each worker now gets a slightly different dropout rate (0.12-0.18) for diversity
-  - Expected improvement: +3-5% accuracy
+- **FIX #3: Reduced Dropout for Ensemble Training**
+- Default dropout reduced from 0.5 to 0.15 for ensemble members
+- Dropout is redundant when using ensembles (ensemble itself provides regularization)
+- Each worker now gets a slightly different dropout rate (0.12-0.18) for diversity
+- Expected improvement: +3-5% accuracy
 
-- **✅ FIX #5: Added Learning Rate Scheduling**
-  - Implemented CosineAnnealingLR scheduler for all workers
-  - Learning rate decays from initial value to 1e-6 over training
-  - Helps models converge better on complex datasets
-  - Expected improvement: +2-4% accuracy
+- **FIX #5: Added Learning Rate Scheduling**
+- Implemented CosineAnnealingLR scheduler for all workers
+- Learning rate decays from initial value to 1e-6 over training
+- Helps models converge better on complex datasets
+- Expected improvement: +2-4% accuracy
 
-- **✅ FIX #6: Added Ensemble Diversity**
-  - Each worker now has different learning rates: [0.001, 0.0008, 0.0012, 0.0009]
-  - Each worker has different dropout rates: [0.15, 0.18, 0.12, 0.16]
-  - Diversity prevents all workers from making the same mistakes
-  - Expected improvement: +2-3% accuracy
+- **FIX #6: Added Ensemble Diversity**
+- Each worker now has different learning rates: [0.001, 0.0008, 0.0012, 0.0009]
+- Each worker has different dropout rates: [0.15, 0.18, 0.12, 0.16]
+- Diversity prevents all workers from making the same mistakes
+- Expected improvement: +2-3% accuracy
 
 #### Additional Improvements
 - **Gradient Clipping**: Added gradient norm clipping (max_norm=1.0) for training stability
@@ -130,10 +130,10 @@ No code changes required! The improvements are automatic.
 If your model supports `dropout_rate` parameter, HQDE will automatically inject diverse dropout rates:
 ```python
 class MyModel(nn.Module):
-    def __init__(self, num_classes=10, dropout_rate=0.15):  # ✅ Add this parameter
-        super().__init__()
-        self.dropout = nn.Dropout(dropout_rate)  # ✅ Use the parameter
-        # ... rest of model
+def __init__(self, num_classes=10, dropout_rate=0.15): # Add this parameter
+super().__init__()
+self.dropout = nn.Dropout(dropout_rate) # Use the parameter
+# ... rest of model
 ```
 
 If your model doesn't support `dropout_rate`, it will use the default architecture (no changes needed).

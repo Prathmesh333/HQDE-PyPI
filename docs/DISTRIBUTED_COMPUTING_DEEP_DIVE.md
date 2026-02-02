@@ -141,7 +141,7 @@ def train_ensemble(self, data_loader, num_epochs: int = 10):
             # Wait for all workers to complete
             batch_losses = ray.get(training_futures)
         
-        # 🆕 v0.1.5: Aggregate and synchronize weights after each epoch (FedAvg)
+        # v0.1.5: Aggregate and synchronize weights after each epoch (FedAvg)
         aggregated_weights = self.aggregate_weights()
         if aggregated_weights:
             self.broadcast_weights(aggregated_weights)
@@ -159,7 +159,7 @@ Worker 1: [32───63]     (samples 32-63, LR=0.0008, dropout=0.18)
 Worker 2: [64───95]     (samples 64-95, LR=0.0012, dropout=0.12)
 Worker 3: [96──127]     (samples 96-127, LR=0.0009, dropout=0.16)
 
-🆕 v0.1.5: Each worker has different hyperparameters for ensemble diversity
+v0.1.5: Each worker has different hyperparameters for ensemble diversity
 ```
 
 ---
