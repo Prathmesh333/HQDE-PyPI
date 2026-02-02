@@ -3,12 +3,12 @@
 **Version:** 0.1.5  
 **Last Updated:** February 2025
 
-## 🎉 What's New in v0.1.5
+##  What's New in v0.1.5
 
 **Critical Distributed Training Improvements:**
-- ✅ **Enabled FedAvg Weight Aggregation** - Workers now synchronize knowledge after each epoch
-- ✅ **Added Ensemble Diversity** - Different LR and dropout per worker for better ensemble performance
-- ✅ **Improved Training Stability** - Gradient clipping and better synchronization
+-  **Enabled FedAvg Weight Aggregation** - Workers now synchronize knowledge after each epoch
+-  **Added Ensemble Diversity** - Different LR and dropout per worker for better ensemble performance
+-  **Improved Training Stability** - Gradient clipping and better synchronization
 
 See [CHANGELOG.md](../CHANGELOG.md) for complete details.
 
@@ -69,19 +69,19 @@ def create_ensemble_workers(self, model_class, model_kwargs):
 **GPU Distribution Example**:
 ```
 2 GPUs, 4 Workers:
-┌─────────────────────────────────────────────────┐
-│                    GPU 0                         │
-│  ┌─────────────────┐  ┌─────────────────┐       │
-│  │   Worker 0      │  │   Worker 1      │       │
-│  │   0.5 GPU       │  │   0.5 GPU       │       │
-│  └─────────────────┘  └─────────────────┘       │
-├─────────────────────────────────────────────────┤
-│                    GPU 1                         │
-│  ┌─────────────────┐  ┌─────────────────┐       │
-│  │   Worker 2      │  │   Worker 3      │       │
-│  │   0.5 GPU       │  │   0.5 GPU       │       │
-│  └─────────────────┘  └─────────────────┘       │
-└─────────────────────────────────────────────────┘
+
+                    GPU 0                         
+           
+     Worker 0           Worker 1             
+     0.5 GPU            0.5 GPU              
+           
+
+                    GPU 1                         
+           
+     Worker 2           Worker 3             
+     0.5 GPU            0.5 GPU              
+           
+
 ```
 
 ### Worker Training Implementation
@@ -152,12 +152,12 @@ def train_ensemble(self, data_loader, num_epochs: int = 10):
 ```
 Batch of 128 samples, 4 workers:
 
-Original Batch: [0─────────────────────────────────127]
+Original Batch: [0127]
                          ↓ split
-Worker 0: [0────31]     (samples 0-31, LR=0.001, dropout=0.15)
-Worker 1: [32───63]     (samples 32-63, LR=0.0008, dropout=0.18)
-Worker 2: [64───95]     (samples 64-95, LR=0.0012, dropout=0.12)
-Worker 3: [96──127]     (samples 96-127, LR=0.0009, dropout=0.16)
+Worker 0: [031]     (samples 0-31, LR=0.001, dropout=0.15)
+Worker 1: [3263]     (samples 32-63, LR=0.0008, dropout=0.18)
+Worker 2: [6495]     (samples 64-95, LR=0.0012, dropout=0.12)
+Worker 3: [96127]     (samples 96-127, LR=0.0009, dropout=0.16)
 
 v0.1.5: Each worker has different hyperparameters for ensemble diversity
 ```
@@ -224,36 +224,36 @@ def broadcast_weights(self, aggregated_weights: Dict[str, torch.Tensor]):
 
 ```
 EPOCH 1:
-┌─────────────────────────────────────────────────────────────┐
-│ Worker 1: Train on partition 1 → Weights W1                 │
-│ Worker 2: Train on partition 2 → Weights W2                 │
-│ Worker 3: Train on partition 3 → Weights W3                 │
-│ Worker 4: Train on partition 4 → Weights W4                 │
-└────────────────────────┬────────────────────────────────────┘
-                         │
-                         ▼
-              ┌──────────────────────┐
-              │  AGGREGATE (FedAvg)  │
-              │  W_avg = (W1+W2+W3+W4)/4 │
-              └──────────┬───────────┘
-                         │
-                         ▼
-              ┌──────────────────────┐
-              │  BROADCAST W_avg     │
-              │  to all workers      │
-              └──────────┬───────────┘
-                         │
-                         ▼
+
+ Worker 1: Train on partition 1 → Weights W1                 
+ Worker 2: Train on partition 2 → Weights W2                 
+ Worker 3: Train on partition 3 → Weights W3                 
+ Worker 4: Train on partition 4 → Weights W4                 
+
+                         
+                         
+              
+                AGGREGATE (FedAvg)  
+                W_avg = (W1+W2+W3+W4)/4 
+              
+                         
+                         
+              
+                BROADCAST W_avg     
+                to all workers      
+              
+                         
+                         
 EPOCH 2:
-┌─────────────────────────────────────────────────────────────┐
-│ All workers start with W_avg (synchronized knowledge)        │
-│ Worker 1: Train on partition 1 → Weights W1'                │
-│ Worker 2: Train on partition 2 → Weights W2'                │
-│ Worker 3: Train on partition 3 → Weights W3'                │
-│ Worker 4: Train on partition 4 → Weights W4'                │
-└────────────────────────┬────────────────────────────────────┘
-                         │
-                         ▼
+
+ All workers start with W_avg (synchronized knowledge)        
+ Worker 1: Train on partition 1 → Weights W1'                
+ Worker 2: Train on partition 2 → Weights W2'                
+ Worker 3: Train on partition 3 → Weights W3'                
+ Worker 4: Train on partition 4 → Weights W4'                
+
+                         
+                         
               (Repeat aggregation...)
 ```
 
@@ -330,10 +330,10 @@ def _map_phase(self, ensemble_data):
 INPUT: 4 workers' weight dictionaries
 
 Worker 1 weights:          Worker 2 weights:
-├── conv1.weight           ├── conv1.weight
-├── conv1.bias             ├── conv1.bias
-├── conv2.weight           ├── conv2.weight
-└── fc1.weight             └── fc1.weight
+ conv1.weight            conv1.weight
+ conv1.bias              conv1.bias
+ conv2.weight            conv2.weight
+ fc1.weight              fc1.weight
 
         ↓ MAP (extract and tag)
 
@@ -713,7 +713,7 @@ def _calculate_node_suitability_score(self, task_data, node_stats):
 Task: GPU-intensive weight aggregation
 
 Worker A: success=0.95, load=0.2, speed=2s, has_gpu=True
-Score = 0.95×0.4 + 0.8×0.3 + 0.8×0.2 + 1.0×0.1 = 0.88 ✓
+Score = 0.95×0.4 + 0.8×0.3 + 0.8×0.2 + 1.0×0.1 = 0.88 
 
 Worker B: success=0.90, load=0.7, speed=5s, has_gpu=True
 Score = 0.90×0.4 + 0.3×0.3 + 0.5×0.2 + 1.0×0.1 = 0.65

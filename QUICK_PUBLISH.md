@@ -1,6 +1,6 @@
 # Quick Publish Guide - HQDE v0.1.5
 
-## 🚀 Fastest Way: GitHub Actions (Recommended)
+##  Fastest Way: GitHub Actions (Recommended)
 
 ### One-Time Setup (5 minutes)
 
@@ -37,7 +37,7 @@ git push origin v0.1.5
 
 ---
 
-## 🔧 Alternative: Manual Publish
+##  Alternative: Manual Publish
 
 If you prefer manual control:
 
@@ -56,7 +56,7 @@ chmod +x publish.sh
 
 ---
 
-## ✅ Verify Publication
+##  Verify Publication
 
 ```bash
 # Wait 2-3 minutes, then:
@@ -69,7 +69,7 @@ python -c "import hqde; print(hqde.__version__)"
 
 ---
 
-## 📝 What to Do Next
+##  What to Do Next
 
 1. **Update Kaggle Notebook:**
    ```python
@@ -85,7 +85,7 @@ python -c "import hqde; print(hqde.__version__)"
 
 ---
 
-## 🎯 Expected Results
+##  Expected Results
 
 | Dataset | Before | After | Gain |
 |---------|--------|-------|------|
@@ -95,7 +95,7 @@ python -c "import hqde; print(hqde.__version__)"
 
 ---
 
-## 📚 Full Documentation
+##  Full Documentation
 
 - **GitHub Actions Setup:** `GITHUB_ACTIONS_SETUP.md`
 - **Complete Guide:** `PUBLISH_CHECKLIST.md`
@@ -103,4 +103,4 @@ python -c "import hqde; print(hqde.__version__)"
 
 ---
 
-**Recommended: Use GitHub Actions - it's faster and automated! 🚀**
+**Recommended: Use GitHub Actions - it's faster and automated! **

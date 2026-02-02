@@ -7,14 +7,14 @@
 
 This is a comprehensive technical documentation of the HQDE (Hierarchical Quantum-Distributed Ensemble Learning) framework, covering every component with code references.
 
-## 🎉 What's New in v0.1.5
+##  What's New in v0.1.5
 
 **Critical Accuracy Improvements:**
-- ✅ **Enabled Weight Aggregation (FedAvg)** - Workers now share knowledge after each epoch
-- ✅ **Reduced Dropout to 0.15** - Optimized for ensemble learning with diversity
-- ✅ **Added Learning Rate Scheduling** - CosineAnnealingLR for better convergence
-- ✅ **Added Ensemble Diversity** - Different LR and dropout per worker
-- ✅ **Added Gradient Clipping** - Improved training stability
+-  **Enabled Weight Aggregation (FedAvg)** - Workers now share knowledge after each epoch
+-  **Reduced Dropout to 0.15** - Optimized for ensemble learning with diversity
+-  **Added Learning Rate Scheduling** - CosineAnnealingLR for better convergence
+-  **Added Ensemble Diversity** - Different LR and dropout per worker
+-  **Added Gradient Clipping** - Improved training stability
 
 **Expected Performance Gains:**
 - CIFAR-10: +16-21% accuracy improvement
@@ -45,45 +45,45 @@ See [CHANGELOG.md](../CHANGELOG.md) for complete details.
 HQDE is a **production-ready framework** that combines three key innovations:
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    HQDE SYSTEM ARCHITECTURE                      │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  ┌─────────────┐    ┌─────────────────┐    ┌────────────────┐   │
-│  │   QUANTUM   │    │   DISTRIBUTED   │    │    ADAPTIVE    │   │
-│  │  INSPIRED   │───▶│    ENSEMBLE     │───▶│  QUANTIZATION  │   │
-│  │ ALGORITHMS  │    │    LEARNING     │    │                │   │
-│  └─────────────┘    └─────────────────┘    └────────────────┘   │
-│         │                   │                      │             │
-│         ▼                   ▼                      ▼             │
-│  ┌─────────────┐    ┌─────────────────┐    ┌────────────────┐   │
-│  │ Superposition│   │   Ray Workers   │    │  4-16 bit      │   │
-│  │ Aggregation │    │   MapReduce     │    │  Precision     │   │
-│  │ Entanglement│    │   Hierarchical  │    │  Compression   │   │
-│  │ Noise Inject│    │   Aggregation   │    │                │   │
-│  └─────────────┘    └─────────────────┘    └────────────────┘   │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+
+                    HQDE SYSTEM ARCHITECTURE                      
+
+                                                                  
+             
+     QUANTUM          DISTRIBUTED           ADAPTIVE       
+    INSPIRED       ENSEMBLE       QUANTIZATION     
+   ALGORITHMS          LEARNING                            
+             
+                                                               
+                                                               
+             
+   Superposition      Ray Workers         4-16 bit         
+   Aggregation        MapReduce           Precision        
+   Entanglement       Hierarchical        Compression      
+   Noise Inject       Aggregation                          
+             
+                                                                  
+
 ```
 
 ### Key Files Structure
 
 ```
 hqde/
-├── __init__.py              # Package exports
-├── core/
-│   └── hqde_system.py       # Main HQDE system (485 lines)
-├── quantum/
-│   ├── quantum_aggregator.py    # Quantum ensemble aggregation (291 lines)
-│   ├── quantum_noise.py         # Quantum noise generation (284 lines)
-│   └── quantum_optimization.py  # Quantum annealing optimizer (336 lines)
-├── distributed/
-│   ├── mapreduce_ensemble.py      # MapReduce pattern (394 lines)
-│   ├── hierarchical_aggregator.py # Tree aggregation (399 lines)
-│   ├── fault_tolerance.py         # Byzantine fault tolerance (346 lines)
-│   └── load_balancer.py           # Dynamic load balancing (498 lines)
-└── utils/
-    └── performance_monitor.py     # System monitoring (465 lines)
+ __init__.py              # Package exports
+ core/
+    hqde_system.py       # Main HQDE system (485 lines)
+ quantum/
+    quantum_aggregator.py    # Quantum ensemble aggregation (291 lines)
+    quantum_noise.py         # Quantum noise generation (284 lines)
+    quantum_optimization.py  # Quantum annealing optimizer (336 lines)
+ distributed/
+    mapreduce_ensemble.py      # MapReduce pattern (394 lines)
+    hierarchical_aggregator.py # Tree aggregation (399 lines)
+    fault_tolerance.py         # Byzantine fault tolerance (346 lines)
+    load_balancer.py           # Dynamic load balancing (498 lines)
+ utils/
+     performance_monitor.py     # System monitoring (465 lines)
 ```
 
 ---
@@ -325,19 +325,19 @@ class MapReduceEnsembleManager:
 
 ```
   MAP PHASE                    SHUFFLE PHASE                REDUCE PHASE
-┌──────────────┐             ┌──────────────┐            ┌──────────────┐
-│ Worker 1     │             │              │            │              │
-│ Weights ─────┼─────────────┼──▶ Group by  │            │  Aggregate   │
-├──────────────┤             │   Parameter  │────────────▶│   Weights    │
-│ Worker 2     │             │     Name     │            │              │
-│ Weights ─────┼─────────────┤              │            │  (Mean/      │
-├──────────────┤             │  conv1.weight│            │   Weighted)  │
-│ Worker 3     │             │  conv2.weight│            │              │
-│ Weights ─────┼─────────────┤  fc1.weight  │            └──────────────┘
-├──────────────┤             │     ...      │
-│ Worker N     │             └──────────────┘
-│ Weights ─────┤
-└──────────────┘
+                         
+ Worker 1                                                          
+ Weights  Group by                Aggregate   
+                Parameter     Weights    
+ Worker 2                       Name                               
+ Weights                             (Mean/      
+               conv1.weight               Weighted)  
+ Worker 3                    conv2.weight                          
+ Weights   fc1.weight              
+                  ...      
+ Worker N                  
+ Weights 
+
 ```
 
 ### 3.3 Hierarchical Tree Aggregation
@@ -366,25 +366,25 @@ class HierarchicalAggregator:
 **Tree Structure Example** (8 workers, branching factor 2):
 
 ```
-                    ┌────────────┐
-        Level 0     │   ROOT     │  (Final aggregated weights)
-                    └─────┬──────┘
-                          │
-              ┌───────────┴───────────┐
-              ▼                       ▼
-        ┌──────────┐            ┌──────────┐
-Level 1 │  Agg-1   │            │  Agg-2   │
-        └────┬─────┘            └────┬─────┘
-             │                       │
-      ┌──────┴──────┐         ┌──────┴──────┐
-      ▼             ▼         ▼             ▼
-   ┌──────┐     ┌──────┐   ┌──────┐     ┌──────┐
-L2 │Agg-3 │     │Agg-4 │   │Agg-5 │     │Agg-6 │
-   └──┬───┘     └──┬───┘   └──┬───┘     └──┬───┘
-      │            │          │            │
-   ┌──┴──┐     ┌──┴──┐    ┌──┴──┐     ┌──┴──┐
-   │W1│W2│     │W3│W4│    │W5│W6│     │W7│W8│  ← Ensemble Workers
-   └─────┘     └─────┘    └─────┘     └─────┘
+                    
+        Level 0        ROOT       (Final aggregated weights)
+                    
+                          
+              
+                                     
+                    
+Level 1   Agg-1                 Agg-2   
+                    
+                                    
+               
+                                         
+                
+L2 Agg-3      Agg-4    Agg-5      Agg-6 
+                
+                                        
+                 
+   W1W2     W3W4    W5W6     W7W8  ← Ensemble Workers
+                 
 ```
 
 **Communication Complexity**: O(log n)
@@ -792,70 +792,70 @@ class PerformanceMonitor:
 ### Complete Training Flow
 
 ```
-┌─────────────────┐
-│  User creates   │
-│  HQDESystem     │  ← create_hqde_system(model_class, num_workers=4)
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ Initialize Ray  │  ← ray.init()
-│ Create Workers  │  ← @ray.remote class EnsembleWorker
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────────────────────────────────────────────────┐
-│                   TRAINING PHASE                             │
-│                                                              │
-│  For each epoch:                                             │
-│    For each batch:                                           │
-│      ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐        │
-│      │Worker 1 │ │Worker 2 │ │Worker 3 │ │Worker 4 │        │
-│      │ Data 1  │ │ Data 2  │ │ Data 3  │ │ Data 4  │        │
-│      └────┬────┘ └────┬────┘ └────┬────┘ └────┬────┘        │
-│           │           │           │           │              │
-│           ▼           ▼           ▼           ▼              │
-│      Forward pass → Loss → Backward pass → Update weights   │
-│                                                              │
-└────────────────────────────┬────────────────────────────────┘
-                             │
-                             ▼
-┌─────────────────────────────────────────────────────────────┐
-│                   AGGREGATION PHASE                          │
-│                                                              │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │ Collect weights from all workers                     │    │
-│  │ weights = [worker.get_weights() for worker in workers]│   │
-│  └────────────────────────┬────────────────────────────┘    │
-│                           │                                  │
-│                           ▼                                  │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │ Aggregate using chosen method:                       │    │
-│  │ - Simple averaging                                   │    │
-│  │ - Efficiency-weighted                                │    │
-│  │ - Quantum superposition                              │    │
-│  │ - Entanglement-based                                 │    │
-│  └─────────────────────────────────────────────────────┘    │
-│                                                              │
-└────────────────────────────┬────────────────────────────────┘
-                             │
-                             ▼
-┌─────────────────────────────────────────────────────────────┐
-│                   PREDICTION PHASE                           │
-│                                                              │
-│  For each test batch:                                        │
-│    ┌─────────────────────────────────────────────────────┐  │
-│    │ All workers make predictions in parallel             │  │
-│    │ predictions = [worker.predict(data) for worker]      │  │
-│    └────────────────────────┬────────────────────────────┘  │
-│                             │                                │
-│                             ▼                                │
-│    ┌─────────────────────────────────────────────────────┐  │
-│    │ Ensemble voting: average all predictions             │  │
-│    │ final = torch.stack(predictions).mean(dim=0)         │  │
-│    └─────────────────────────────────────────────────────┘  │
-│                                                              │
-└──────────────────────────────────────────────────────────────┘
+
+  User creates   
+  HQDESystem       ← create_hqde_system(model_class, num_workers=4)
+
+         
+         
+
+ Initialize Ray    ← ray.init()
+ Create Workers    ← @ray.remote class EnsembleWorker
+
+         
+         
+
+                   TRAINING PHASE                             
+                                                              
+  For each epoch:                                             
+    For each batch:                                           
+                 
+      Worker 1  Worker 2  Worker 3  Worker 4         
+       Data 1    Data 2    Data 3    Data 4          
+                 
+                                                          
+                                                          
+      Forward pass → Loss → Backward pass → Update weights   
+                                                              
+
+                             
+                             
+
+                   AGGREGATION PHASE                          
+                                                              
+      
+   Collect weights from all workers                         
+   weights = [worker.get_weights() for worker in workers]   
+      
+                                                             
+                                                             
+      
+   Aggregate using chosen method:                           
+   - Simple averaging                                       
+   - Efficiency-weighted                                    
+   - Quantum superposition                                  
+   - Entanglement-based                                     
+      
+                                                              
+
+                             
+                             
+
+                   PREDICTION PHASE                           
+                                                              
+  For each test batch:                                        
+      
+     All workers make predictions in parallel               
+     predictions = [worker.predict(data) for worker]        
+      
+                                                             
+                                                             
+      
+     Ensemble voting: average all predictions               
+     final = torch.stack(predictions).mean(dim=0)           
+      
+                                                              
+
 ```
 
 ---
@@ -954,27 +954,27 @@ hqde.cleanup()
 
 ### Critical Accuracy Fixes
 
-1. **✅ Enabled Weight Aggregation (FedAvg)**
+1. ** Enabled Weight Aggregation (FedAvg)**
    - Workers now synchronize weights after each epoch
    - Previously commented out in v0.1.4 (line 297-300)
    - Expected improvement: +15-20% accuracy
 
-2. **✅ Reduced Dropout to 0.15**
+2. ** Reduced Dropout to 0.15**
    - Default dropout reduced from 0.5 to 0.15
    - Each worker gets different dropout (0.12-0.18) for diversity
    - Expected improvement: +3-5% accuracy
 
-3. **✅ Added Learning Rate Scheduling**
+3. ** Added Learning Rate Scheduling**
    - CosineAnnealingLR scheduler for all workers
    - LR decays from initial value to 1e-6
    - Expected improvement: +2-4% accuracy
 
-4. **✅ Added Ensemble Diversity**
+4. ** Added Ensemble Diversity**
    - Different LR per worker: [0.001, 0.0008, 0.0012, 0.0009]
    - Different dropout per worker: [0.15, 0.18, 0.12, 0.16]
    - Expected improvement: +2-3% accuracy
 
-5. **✅ Added Gradient Clipping**
+5. ** Added Gradient Clipping**
    - Max norm = 1.0 for training stability
 
 ### Performance Gains

@@ -10,14 +10,14 @@ A production-ready framework for distributed ensemble learning with quantum-insp
 
 HQDE combines quantum-inspired algorithms with distributed computing to deliver superior machine learning performance with significantly reduced memory usage and training time.
 
-## 🎉 What's New in v0.1.5
+##  What's New in v0.1.5
 
 **Critical Accuracy Improvements:**
-- ✅ **Enabled Weight Aggregation (FedAvg)** - Workers now share knowledge after each epoch (+15-20% accuracy)
-- ✅ **Reduced Dropout to 0.15** - Optimized for ensemble learning with diversity per worker (+3-5% accuracy)
-- ✅ **Added Learning Rate Scheduling** - CosineAnnealingLR for better convergence (+2-4% accuracy)
-- ✅ **Added Ensemble Diversity** - Different LR and dropout per worker (+2-3% accuracy)
-- ✅ **Added Gradient Clipping** - Improved training stability
+-  **Enabled Weight Aggregation (FedAvg)** - Workers now share knowledge after each epoch (+15-20% accuracy)
+-  **Reduced Dropout to 0.15** - Optimized for ensemble learning with diversity per worker (+3-5% accuracy)
+-  **Added Learning Rate Scheduling** - CosineAnnealingLR for better convergence (+2-4% accuracy)
+-  **Added Ensemble Diversity** - Different LR and dropout per worker (+2-3% accuracy)
+-  **Added Gradient Clipping** - Improved training stability
 
 **Expected Performance Gains:**
 - CIFAR-10: ~59% → ~75-80% (+16-21%)
@@ -80,7 +80,7 @@ import torch.nn as nn
 
 # Define your PyTorch model
 class MyModel(nn.Module):
-    def __init__(self, num_classes=10, dropout_rate=0.15):  # ✅ v0.1.5: Support dropout_rate
+    def __init__(self, num_classes=10, dropout_rate=0.15):  #  v0.1.5: Support dropout_rate
         super().__init__()
         self.layers = nn.Sequential(
             nn.Conv2d(3, 32, 3, padding=1),
@@ -90,7 +90,7 @@ class MyModel(nn.Module):
             nn.ReLU(),
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
-            nn.Dropout(dropout_rate),  # ✅ v0.1.5: Use dropout_rate parameter
+            nn.Dropout(dropout_rate),  #  v0.1.5: Use dropout_rate parameter
             nn.Linear(64, num_classes)
         )
 
@@ -105,7 +105,7 @@ hqde_system = create_hqde_system(
 )
 
 # Train the ensemble (v0.1.5: Workers now share knowledge via FedAvg)
-metrics = hqde_system.train(train_loader, num_epochs=40)  # ✅ Use 40 epochs for best results
+metrics = hqde_system.train(train_loader, num_epochs=40)  #  Use 40 epochs for best results
 
 # Make predictions (ensemble voting)
 predictions = hqde_system.predict(test_loader)
@@ -117,9 +117,9 @@ hqde_system.cleanup()
 **What to expect in v0.1.5:**
 ```
 Epoch 1/40, Average Loss: 2.3045, LR: 0.001000
-  → Weights aggregated and synchronized at epoch 1  ✅
+  → Weights aggregated and synchronized at epoch 1  
 Epoch 2/40, Average Loss: 1.8234, LR: 0.000998
-  → Weights aggregated and synchronized at epoch 2  ✅
+  → Weights aggregated and synchronized at epoch 2  
 ```
 
 **Examples:**
@@ -134,36 +134,36 @@ python examples/cifar10_test.py          # Real CIFAR-10 dataset
 ## Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    HQDE SYSTEM ARCHITECTURE                      │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  ┌─────────────┐    ┌─────────────────┐    ┌────────────────┐   │
-│  │   QUANTUM   │    │   DISTRIBUTED   │    │    ADAPTIVE    │   │
-│  │  INSPIRED   │───▶│    ENSEMBLE     │───▶│  QUANTIZATION  │   │
-│  │ ALGORITHMS  │    │    LEARNING     │    │                │   │
-│  └─────────────┘    └─────────────────┘    └────────────────┘   │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+
+                    HQDE SYSTEM ARCHITECTURE                      
+
+                                                                  
+             
+     QUANTUM          DISTRIBUTED           ADAPTIVE       
+    INSPIRED       ENSEMBLE       QUANTIZATION     
+   ALGORITHMS          LEARNING                            
+             
+                                                                  
+
 ```
 
 ### Project Structure
 
 ```
 hqde/
-├── core/
-│   └── hqde_system.py           # Main system, workers, quantization
-├── quantum/
-│   ├── quantum_aggregator.py    # Superposition and entanglement
-│   ├── quantum_noise.py         # Quantum noise generation
-│   └── quantum_optimization.py  # QUBO and quantum annealing
-├── distributed/
-│   ├── mapreduce_ensemble.py      # MapReduce pattern
-│   ├── hierarchical_aggregator.py # Tree aggregation
-│   ├── fault_tolerance.py         # Byzantine fault tolerance
-│   └── load_balancer.py           # Dynamic load balancing
-└── utils/
-    └── performance_monitor.py     # System monitoring
+ core/
+    hqde_system.py           # Main system, workers, quantization
+ quantum/
+    quantum_aggregator.py    # Superposition and entanglement
+    quantum_noise.py         # Quantum noise generation
+    quantum_optimization.py  # QUBO and quantum annealing
+ distributed/
+    mapreduce_ensemble.py      # MapReduce pattern
+    hierarchical_aggregator.py # Tree aggregation
+    fault_tolerance.py         # Byzantine fault tolerance
+    load_balancer.py           # Dynamic load balancing
+ utils/
+     performance_monitor.py     # System monitoring
 ```
 
 ---

@@ -158,13 +158,14 @@ class DistributedEnsembleManager:
         gpu_per_worker = num_gpus / self.num_workers if num_gpus > 0 else 0
         
         # FIX #6: ADD DIVERSITY - Different learning rates and dropout for each worker
-        learning_rates = [0.001, 0.0008, 0.0012, 0.0009][:self.num_workers]
-        dropout_rates = [0.15, 0.18, 0.12, 0.16][:self.num_workers]
+        # Diversity is KEY to ensemble power - each worker should learn differently
+        learning_rates = [0.001, 0.0008, 0.0012, 0.0009][:self.num_workers]  # Different LRs
+        dropout_rates = [0.10, 0.12, 0.15, 0.13][:self.num_workers]  # Lower dropout for ensembles
         
         # Extend if more workers than predefined configs
         while len(learning_rates) < self.num_workers:
             learning_rates.append(0.001)
-            dropout_rates.append(0.15)
+            dropout_rates.append(0.12)
         
         @ray.remote(num_gpus=gpu_per_worker)
         class EnsembleWorker:
@@ -201,7 +202,7 @@ class DistributedEnsembleManager:
                 
                 self.optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate)
                 
-                # ✅ FIX #5: ADD LEARNING RATE SCHEDULING
+                #  FIX #5: ADD LEARNING RATE SCHEDULING
                 self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
                     self.optimizer,
                     T_max=50,  # Will be adjusted based on total epochs
@@ -232,7 +233,7 @@ class DistributedEnsembleManager:
                     loss = self.criterion(outputs, targets)
                     loss.backward()
                     
-                    # ✅ GRADIENT CLIPPING for stability
+                    #  GRADIENT CLIPPING for stability
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                     
                     self.optimizer.step()
@@ -322,7 +323,7 @@ class DistributedEnsembleManager:
         ray.get(futures)
 
     def train_ensemble(self, data_loader, num_epochs: int = 10):
-        """Train the ensemble using distributed workers with FedAvg-style aggregation."""
+        """Train the ensemble using distributed workers."""
         # Setup training for all workers
         self.setup_workers_training()
 
@@ -355,13 +356,28 @@ class DistributedEnsembleManager:
                 batch_losses = ray.get(training_futures)
                 epoch_losses.extend([loss for loss in batch_losses if loss is not None])
 
-            # ✅ FIX #1: AGGREGATE WEIGHTS AFTER EACH EPOCH (FedAvg style)
-            aggregated_weights = self.aggregate_weights()
-            if aggregated_weights:
-                self.broadcast_weights(aggregated_weights)
-                self.logger.info(f"  → Weights aggregated and synchronized at epoch {epoch + 1}")
+            # CRITICAL FIX: DO NOT aggregate during training!
+            # Ensembles work by having DIVERSE models that specialize on different patterns
+            # Aggregating weights destroys this diversity and makes all workers identical
+            # Instead, let each worker learn independently and combine predictions at inference
+            # 
+            # Traditional ensemble approach:
+            # 1. Train N diverse models independently
+            # 2. Each model specializes on different aspects of the data
+            # 3. Combine predictions (voting/averaging) at inference time
+            # 4. Diversity is the KEY to ensemble power
+            #
+            # What FedAvg does (WRONG for ensembles):
+            # 1. Train N models independently
+            # 2. Average their weights periodically
+            # 3. All models become identical
+            # 4. Lose ensemble diversity and power
+            #
+            # Only aggregate at the very end if you want a single final model
+            # For ensemble inference, keep workers diverse!
+            pass  # No aggregation during training
             
-            # ✅ FIX #5: STEP LEARNING RATE SCHEDULERS
+            # Step learning rate schedulers
             scheduler_futures = [worker.step_scheduler.remote() for worker in self.workers]
             current_lrs = ray.get(scheduler_futures)
             avg_lr = np.mean(current_lrs) if current_lrs else 0.001

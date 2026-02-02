@@ -4,7 +4,7 @@
 
 Version 0.1.5 fixes **critical accuracy issues** that were preventing HQDE from improving with more epochs. The main problem was that workers were training independently without sharing knowledge.
 
-## 🔴 Critical Fixes Implemented
+##  Critical Fixes Implemented
 
 ### 1. Enabled Weight Aggregation (FedAvg Style)
 **Problem**: Workers trained independently, never sharing knowledge
@@ -188,7 +188,7 @@ model_kwargs['dropout_rate'] = dropout_rate # 0.15 default
 self.model = model_class(**model_kwargs)
 ```
 
-## 🎓 For Your Models
+##  For Your Models
 
 If you want to take advantage of the dropout diversity, update your model definitions:
 

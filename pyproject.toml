@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hqde"
-version = "0.1.6"
+version = "0.1.7"
 description = "Hierarchical Quantum-Distributed Ensemble Learning Framework"
 readme = "README.md"
 license = {text = "MIT"}

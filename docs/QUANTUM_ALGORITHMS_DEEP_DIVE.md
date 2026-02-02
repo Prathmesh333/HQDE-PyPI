@@ -3,12 +3,12 @@
 **Version:** 0.1.5  
 **Last Updated:** February 2025
 
-## 🎉 What's New in v0.1.5
+##  What's New in v0.1.5
 
 While quantum algorithms remain unchanged, v0.1.5 improves how they're applied:
-- ✅ **Better Ensemble Diversity** - Different hyperparameters per worker enhance quantum aggregation effectiveness
-- ✅ **Improved Convergence** - Learning rate scheduling helps quantum-inspired optimization find better solutions
-- ✅ **Stable Training** - Gradient clipping prevents quantum noise from destabilizing training
+-  **Better Ensemble Diversity** - Different hyperparameters per worker enhance quantum aggregation effectiveness
+-  **Improved Convergence** - Learning rate scheduling helps quantum-inspired optimization find better solutions
+-  **Stable Training** - Gradient clipping prevents quantum noise from destabilizing training
 
 See [CHANGELOG.md](../CHANGELOG.md) for complete details.
 
@@ -38,7 +38,7 @@ See [CHANGELOG.md](../CHANGELOG.md) for complete details.
 
 In real quantum computing, a qubit can exist in a superposition:
 ```
-|ψ⟩ = α|0⟩ + β|1⟩   where |α|² + |β|² = 1
+|ψ = α|0 + β|1   where |α|² + |β|² = 1
 ```
 
 HQDE simulates this by treating ensemble predictions as quantum states:
@@ -52,7 +52,7 @@ def quantum_superposition_aggregation(self, ensemble_predictions, confidence_sco
     amplitudes = torch.sqrt(torch.softmax(confidence_tensor, dim=0))
     
     # Step 2: Create superposition (linear combination)
-    # Like quantum: |ψ⟩ = α₁|pred₁⟩ + α₂|pred₂⟩ + ... + αₙ|predₙ⟩
+    # Like quantum: |ψ = α₁|pred₁ + α₂|pred₂ + ... + αₙ|predₙ
     superposition = torch.zeros_like(ensemble_predictions[0])
     for pred, amplitude in zip(ensemble_predictions, amplitudes):
         superposition += amplitude * pred
@@ -116,12 +116,12 @@ def _initialize_entanglement(self) -> torch.Tensor:
 **Example 4x4 Entanglement Matrix**:
 ```
          W1      W2      W3      W4
-    ┌────────────────────────────────┐
-W1  │  1.00   0.08   -0.05   0.03   │
-W2  │  0.08   1.00    0.12   0.07   │
-W3  │ -0.05   0.12    1.00  -0.02   │
-W4  │  0.03   0.07   -0.02   1.00   │
-    └────────────────────────────────┘
+    
+W1    1.00   0.08   -0.05   0.03   
+W2    0.08   1.00    0.12   0.07   
+W3   -0.05   0.12    1.00  -0.02   
+W4    0.03   0.07   -0.02   1.00   
+    
 ```
 - Diagonal = 1.0 (self-correlation)
 - Off-diagonal = entanglement strength between workers
@@ -236,7 +236,7 @@ def generate_adaptive_quantum_noise(self, weights, gradient=None, loss_value=Non
 It's a problem format that quantum computers (like D-Wave) can solve natively:
 
 ```
-minimize: f(x) = Σᵢ Qᵢᵢxᵢ + Σᵢⱼ Qᵢⱼxᵢxⱼ
+minimize: f(x) = Σᵢ Qᵢᵢxᵢ + Σᵢ Qᵢxᵢx
 
 where xᵢ ∈ {0, 1} (binary variables)
       Q = QUBO matrix
@@ -339,15 +339,15 @@ def get_temperature(self, step):
 **Visualization**:
 ```
 Temperature
-    │
- 10 │ ████
-    │     ████
-    │         ████
-    │             ████
-  1 │                 ████
-    │                     ████
-0.01│                         ████
-    └─────────────────────────────▶ Steps
+    
+ 10  
+         
+             
+                 
+  1                  
+                         
+0.01                         
+     Steps
       0%    25%    50%    75%   100%
 ```
 

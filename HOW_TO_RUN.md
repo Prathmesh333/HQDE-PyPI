@@ -5,14 +5,14 @@
 
 This guide provides instructions for installing and running the HQDE (Hierarchical Quantum-Distributed Ensemble Learning) framework.
 
-## 🎉 What's New in v0.1.5
+##  What's New in v0.1.5
 
 **Critical Accuracy Improvements:**
-- ✅ **Enabled Weight Aggregation (FedAvg)** - Workers now share knowledge after each epoch
-- ✅ **Reduced Dropout to 0.15** - Optimized for ensemble learning
-- ✅ **Added Learning Rate Scheduling** - CosineAnnealingLR for better convergence
-- ✅ **Added Ensemble Diversity** - Different LR and dropout per worker
-- ✅ **Added Gradient Clipping** - Improved training stability
+-  **Enabled Weight Aggregation (FedAvg)** - Workers now share knowledge after each epoch
+-  **Reduced Dropout to 0.15** - Optimized for ensemble learning
+-  **Added Learning Rate Scheduling** - CosineAnnealingLR for better convergence
+-  **Added Ensemble Diversity** - Different LR and dropout per worker
+-  **Added Gradient Clipping** - Improved training stability
 
 **Expected Performance Gains:**
 - CIFAR-10: +16-21% accuracy improvement
@@ -197,7 +197,7 @@ num_workers = 4  # Adjust based on available CPU cores/GPUs
 
 ## Recommendations for v0.1.5
 
-1. **Epochs** (🆕 IMPORTANT):
+1. **Epochs** ( IMPORTANT):
    - **Complex datasets** (CIFAR-10, CIFAR-100, STL-10): Use 40+ epochs
    - **Medium datasets** (SVHN, Fashion-MNIST): Use 20-30 epochs
    - **Simple datasets** (MNIST): Use 10-15 epochs

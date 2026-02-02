@@ -3,12 +3,12 @@
 **Version:** 0.1.5  
 **Last Updated:** February 2025
 
-## 🎉 What's New in v0.1.5
+##  What's New in v0.1.5
 
 **Meta-Learning Improvements:**
-- ✅ **FedAvg Weight Aggregation** - Workers now share knowledge after each epoch (implicit meta-learning)
-- ✅ **Ensemble Diversity** - Different LR/dropout per worker creates better meta-learner inputs
-- ✅ **Learning Rate Scheduling** - CosineAnnealingLR improves meta-learner convergence
+-  **FedAvg Weight Aggregation** - Workers now share knowledge after each epoch (implicit meta-learning)
+-  **Ensemble Diversity** - Different LR/dropout per worker creates better meta-learner inputs
+-  **Learning Rate Scheduling** - CosineAnnealingLR improves meta-learner convergence
 
 **Expected Performance Gains:**
 - CIFAR-10: +16-21% accuracy improvement
@@ -128,67 +128,67 @@ def predict(self, data_loader):
 
 ```
 TRAINING PHASE (with FedAvg):
-┌─────────────────────────────────────────────────────────────────────┐
-│   EPOCH 1:                                                           │
-│   Data Batch                                                         │
-│       │                                                              │
-│       ▼                                                              │
-│   ┌───────┐ ┌───────┐ ┌───────┐ ┌───────┐                          │
-│   │Worker1│ │Worker2│ │Worker3│ │Worker4│  ← Each trains own model  │
-│   │ loss1 │ │ loss2 │ │ loss3 │ │ loss4 │  (different LR/dropout)  │
-│   │ LR1   │ │ LR2   │ │ LR3   │ │ LR4   │                          │
-│   └───┬───┘ └───┬───┘ └───┬───┘ └───┬───┘                          │
-│       │         │         │         │                                │
-│       ▼         ▼         ▼         ▼                                │
-│   weights1    wts2      wts3      wts4                              │
-│       │         │         │         │                                │
-│       └─────────┴─────────┴─────────┘                                │
-│                     │                                                │
-│                     ▼                                                │
-│            ┌────────────────────┐                                    │
-│            │  AGGREGATE (FedAvg)│  v0.1.5                         │
-│            │  avg_wts = mean()  │                                    │
-│            └─────────┬──────────┘                                    │
-│                      │                                               │
-│                      ▼                                               │
-│            ┌────────────────────┐                                    │
-│            │  BROADCAST avg_wts │  v0.1.5                         │
-│            │  to all workers    │                                    │
-│            └─────────┬──────────┘                                    │
-│                      │                                               │
-│   EPOCH 2: (all workers start with synchronized knowledge)          │
-│                      ▼                                               │
-│   ┌───────┐ ┌───────┐ ┌───────┐ ┌───────┐                          │
-│   │Worker1│ │Worker2│ │Worker3│ │Worker4│                          │
-│   │avg_wts│ │avg_wts│ │avg_wts│ │avg_wts│  ← Same starting point   │
-│   └───────┘ └───────┘ └───────┘ └───────┘                          │
-│                                                                      │
-└─────────────────────────────────────────────────────────────────────┘
+
+   EPOCH 1:                                                           
+   Data Batch                                                         
+                                                                     
+                                                                     
+                                
+   Worker1 Worker2 Worker3 Worker4  ← Each trains own model  
+    loss1   loss2   loss3   loss4   (different LR/dropout)  
+    LR1     LR2     LR3     LR4                             
+                                
+                                                                  
+                                                                  
+   weights1    wts2      wts3      wts4                              
+                                                                  
+                                       
+                                                                     
+                                                                     
+                                                
+              AGGREGATE (FedAvg)  v0.1.5                         
+              avg_wts = mean()                                      
+                                                
+                                                                     
+                                                                     
+                                                
+              BROADCAST avg_wts   v0.1.5                         
+              to all workers                                        
+                                                
+                                                                     
+   EPOCH 2: (all workers start with synchronized knowledge)          
+                                                                     
+                                
+   Worker1 Worker2 Worker3 Worker4                          
+   avg_wts avg_wts avg_wts avg_wts  ← Same starting point   
+                                
+                                                                      
+
 
 INFERENCE PHASE (Meta-Learning Applied):
-┌─────────────────────────────────────────────────────────────────────┐
-│                                                                      │
-│   Test Input                                                         │
-│       │                                                              │
-│       ▼                                                              │
-│   ┌───────┐ ┌───────┐ ┌───────┐ ┌───────┐                          │
-│   │Worker1│ │Worker2│ │Worker3│ │Worker4│                          │
-│   │ pred1 │ │ pred2 │ │ pred3 │ │ pred4 │                          │
-│   └───┬───┘ └───┬───┘ └───┬───┘ └───┬───┘                          │
-│       │         │         │         │                                │
-│       └────────┬┴─────────┴────────┬┘                                │
-│                │                    │                                │
-│                ▼                    ▼                                │
-│        ┌──────────────────────────────┐                              │
-│        │  AGGREGATION (Meta-Learner)  │                              │
-│        │  mean(pred1, pred2, pred3,   │                              │
-│        │       pred4)                  │                              │
-│        └──────────────┬───────────────┘                              │
-│                       │                                              │
-│                       ▼                                              │
-│               Final Prediction                                       │
-│                                                                      │
-└─────────────────────────────────────────────────────────────────────┘
+
+                                                                      
+   Test Input                                                         
+                                                                     
+                                                                     
+                                
+   Worker1 Worker2 Worker3 Worker4                          
+    pred1   pred2   pred3   pred4                           
+                                
+                                                                  
+                                       
+                                                                    
+                                                                    
+                                      
+          AGGREGATION (Meta-Learner)                                
+          mean(pred1, pred2, pred3,                                 
+               pred4)                                                
+                                      
+                                                                     
+                                                                     
+               Final Prediction                                       
+                                                                      
+
 ```
 
 ---
@@ -442,7 +442,7 @@ def _collect_system_metrics(self) -> SystemMetrics:
 **Q: Is there a separate meta-model?**
 > **A:** No, HQDE uses implicit meta-learning through FedAvg weight aggregation and weighted averaging.
 
-**Q: What changed in v0.1.5 for meta-learning?** 🆕
+**Q: What changed in v0.1.5 for meta-learning?** 
 > **A:** Workers now synchronize weights after each epoch (FedAvg), enabling knowledge sharing. This is the key meta-learning improvement that boosted accuracy by 15-20%.
 
 ---

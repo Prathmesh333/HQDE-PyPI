@@ -1,12 +1,12 @@
 # GitHub Actions Auto-Publishing Setup
 
-## 🎯 Overview
+##  Overview
 
 This guide shows you how to automatically publish HQDE to PyPI whenever you push a new version tag to GitHub.
 
 ---
 
-## 📋 One-Time Setup (5 minutes)
+##  One-Time Setup (5 minutes)
 
 ### Step 1: Get PyPI API Token
 
@@ -37,7 +37,7 @@ If not, create it with the content from the file I just created.
 
 ---
 
-## 🚀 How to Publish (2 methods)
+##  How to Publish (2 methods)
 
 ### Method 1: Push with Version Tag (Recommended)
 
@@ -57,7 +57,7 @@ git push origin v0.1.5
 2. Automatically runs the workflow
 3. Builds the package
 4. Publishes to PyPI
-5. Done! ✅
+5. Done! 
 
 ### Method 2: Manual Trigger
 
@@ -69,25 +69,25 @@ git push origin v0.1.5
 
 ---
 
-## 📊 Monitoring the Publish
+##  Monitoring the Publish
 
 ### Watch the Progress
 
 1. Go to https://github.com/Prathmesh333/HQDE-PyPI/actions
 2. Click on the latest workflow run
 3. Watch the steps execute:
-   - ✅ Checkout code
-   - ✅ Set up Python
-   - ✅ Install dependencies
-   - ✅ Build package
-   - ✅ Check distribution
-   - ✅ Publish to PyPI
+   -  Checkout code
+   -  Set up Python
+   -  Install dependencies
+   -  Build package
+   -  Check distribution
+   -  Publish to PyPI
 
 ### If Successful
 
 You'll see:
 ```
-✅ Publish to PyPI
+ Publish to PyPI
    View at: https://pypi.org/project/hqde/0.1.5/
 ```
 
@@ -100,7 +100,7 @@ Common issues:
 
 ---
 
-## 🔄 Complete Workflow
+##  Complete Workflow
 
 ### For v0.1.5 Release:
 
@@ -149,7 +149,7 @@ python -c "import hqde; print(hqde.__version__)"
 
 ---
 
-## 🎓 Understanding the Workflow
+##  Understanding the Workflow
 
 ### Trigger Conditions
 
@@ -177,7 +177,7 @@ The workflow runs when:
 
 ---
 
-## 🔧 Customization
+##  Customization
 
 ### Change Python Version
 
@@ -212,7 +212,7 @@ Add before PyPI publish:
 
 ---
 
-## 📝 Version Tagging Best Practices
+##  Version Tagging Best Practices
 
 ### Semantic Versioning
 
@@ -222,12 +222,12 @@ Add before PyPI publish:
 
 ### Tag Naming
 
-✅ Good:
+ Good:
 - `v0.1.5`
 - `v1.0.0`
 - `v2.3.1`
 
-❌ Bad:
+ Bad:
 - `0.1.5` (missing 'v')
 - `version-0.1.5` (wrong format)
 - `release-0.1.5` (wrong format)
@@ -248,7 +248,7 @@ git push origin v0.1.5
 
 ---
 
-## 🐛 Troubleshooting
+##  Troubleshooting
 
 ### Issue: Workflow doesn't trigger
 
@@ -309,7 +309,7 @@ git push origin v0.1.6
 
 ---
 
-## 🎉 Quick Reference
+##  Quick Reference
 
 ### Publish New Version
 
@@ -343,7 +343,7 @@ pip show hqde
 
 ---
 
-## ✅ Advantages of GitHub Actions
+##  Advantages of GitHub Actions
 
 1. **Automated**: No manual PyPI upload
 2. **Consistent**: Same build process every time
@@ -354,7 +354,7 @@ pip show hqde
 
 ---
 
-## 📞 Support
+##  Support
 
 If you encounter issues:
 
@@ -365,4 +365,4 @@ If you encounter issues:
 
 ---
 
-**Ready to publish! Just push your tag and GitHub will handle the rest! 🚀**
+**Ready to publish! Just push your tag and GitHub will handle the rest! **
