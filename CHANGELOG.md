@@ -2,6 +2,48 @@
 
 All notable changes to the HQDE project will be documented in this file.
 
+## [0.1.6] - 2025-02-03
+
+### 🐛 Bug Fixes
+
+- **Fixed TypeError with models that don't support dropout_rate**
+  - Added parameter inspection to check if model accepts `dropout_rate` before injecting it
+  - Makes v0.1.5 improvements backward compatible with existing models
+  - Models without `dropout_rate` parameter will work fine (just won't get dropout diversity)
+  - Models with `dropout_rate` parameter will get ensemble diversity as intended
+
+### Technical Details
+
+The code now uses `inspect.signature()` to check if a model's `__init__` method accepts `dropout_rate` parameter before trying to pass it. This prevents `TypeError: unexpected keyword argument 'dropout_rate'` errors.
+
+**Before (v0.1.5):**
+```python
+# Always injected dropout_rate, causing errors if model didn't support it
+if 'dropout_rate' not in model_kwargs:
+    model_kwargs['dropout_rate'] = dropout_rate
+```
+
+**After (v0.1.6):**
+```python
+# Check if model supports dropout_rate first
+model_init_params = inspect.signature(model_class.__init__).parameters
+supports_dropout = 'dropout_rate' in model_init_params
+
+if supports_dropout and 'dropout_rate' not in worker_model_kwargs:
+    worker_model_kwargs['dropout_rate'] = dropout_rate
+```
+
+### Migration
+
+No changes needed! Just upgrade:
+```bash
+pip install hqde==0.1.6 --upgrade
+```
+
+All v0.1.5 improvements (FedAvg, LR scheduling, gradient clipping) are still active.
+
+---
+
 ## [0.1.5] - 2025-02-03
 
 ### 🚀 Major Accuracy Improvements

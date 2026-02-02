@@ -169,11 +169,21 @@ class DistributedEnsembleManager:
         @ray.remote(num_gpus=gpu_per_worker)
         class EnsembleWorker:
             def __init__(self, model_class, model_kwargs, worker_id=0, learning_rate=0.001, dropout_rate=0.15):
-                # ✅ FIX #3: INJECT LOWER DROPOUT RATE
-                if 'dropout_rate' not in model_kwargs:
-                    model_kwargs['dropout_rate'] = dropout_rate
+                # ✅ FIX #3: INJECT LOWER DROPOUT RATE (only if model supports it)
+                import inspect
                 
-                self.model = model_class(**model_kwargs)
+                # Check if model's __init__ accepts dropout_rate parameter
+                model_init_params = inspect.signature(model_class.__init__).parameters
+                supports_dropout = 'dropout_rate' in model_init_params
+                
+                # Make a copy to avoid mutating the original
+                worker_model_kwargs = model_kwargs.copy()
+                
+                # Only inject dropout_rate if model supports it and it's not already set
+                if supports_dropout and 'dropout_rate' not in worker_model_kwargs:
+                    worker_model_kwargs['dropout_rate'] = dropout_rate
+                
+                self.model = model_class(**worker_model_kwargs)
                 self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
                 self.model.to(self.device)
                 self.efficiency_score = 1.0

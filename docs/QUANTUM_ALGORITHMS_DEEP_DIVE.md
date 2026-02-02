@@ -1,5 +1,19 @@
 # HQDE Deep Dive: Part 1 - Quantum-Inspired Algorithms
 
+**Version:** 0.1.5  
+**Last Updated:** February 2025
+
+## 🎉 What's New in v0.1.5
+
+While quantum algorithms remain unchanged, v0.1.5 improves how they're applied:
+- ✅ **Better Ensemble Diversity** - Different hyperparameters per worker enhance quantum aggregation effectiveness
+- ✅ **Improved Convergence** - Learning rate scheduling helps quantum-inspired optimization find better solutions
+- ✅ **Stable Training** - Gradient clipping prevents quantum noise from destabilizing training
+
+See [CHANGELOG.md](../CHANGELOG.md) for complete details.
+
+---
+
 ## Understanding "Quantum-Inspired" vs Real Quantum Computing
 
 ### Critical Distinction
