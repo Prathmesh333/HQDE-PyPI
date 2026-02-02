@@ -10,21 +10,6 @@ A production-ready framework for distributed ensemble learning with quantum-insp
 
 HQDE combines quantum-inspired algorithms with distributed computing to deliver superior machine learning performance with significantly reduced memory usage and training time.
 
-##  What's New in v0.1.5
-
-**Critical Accuracy Improvements:**
--  **Enabled Weight Aggregation (FedAvg)** - Workers now share knowledge after each epoch (+15-20% accuracy)
--  **Reduced Dropout to 0.15** - Optimized for ensemble learning with diversity per worker (+3-5% accuracy)
--  **Added Learning Rate Scheduling** - CosineAnnealingLR for better convergence (+2-4% accuracy)
--  **Added Ensemble Diversity** - Different LR and dropout per worker (+2-3% accuracy)
--  **Added Gradient Clipping** - Improved training stability
-
-**Expected Performance Gains:**
-- CIFAR-10: ~59% → ~75-80% (+16-21%)
-- SVHN: ~72% → ~85-88% (+13-16%)
-- CIFAR-100: ~14% → ~45-55% (+31-41%)
-
-See [CHANGELOG.md](CHANGELOG.md) for details.
 
 ## Table of Contents
 
