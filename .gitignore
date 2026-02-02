@@ -22,6 +22,16 @@ share/python-wheels/
 *.egg
 MANIFEST
 
+# PyPI Publishing
+dist/
+build/
+*.egg-info/
+hqde.egg-info/
+.eggs/
+
+# Twine
+.pypirc
+
 # PyTorch models
 *.pth
 *.pt
@@ -58,11 +68,16 @@ Thumbs.db
 data/
 logs/
 checkpoints/
-*.json
 *.log
+
+# Exclude JSON except package files
+*.json
+!pyproject.json
+!package.json
 
 # Ray
 /tmp/ray/
+ray_results/
 
 # Test outputs
 *_demo.pth
@@ -70,3 +85,13 @@ checkpoints/
 *_results.json
 hqde_*.pth
 hqde_*.json
+
+# Benchmark results
+hqde_benchmark_results.png
+*_benchmark_*.png
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup

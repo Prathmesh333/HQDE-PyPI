@@ -1,0 +1,42 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Shell scripts should always use LF (Unix line endings)
+*.sh text eol=lf
+
+# Windows scripts should always use CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Python files
+*.py text eol=lf
+*.pyx text eol=lf
+
+# Documentation
+*.md text eol=lf
+*.txt text eol=lf
+*.rst text eol=lf
+
+# YAML files
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# JSON files
+*.json text eol=lf
+
+# TOML files
+*.toml text eol=lf
+
+# Binary files
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.pth binary
+*.pt binary
+*.pkl binary
+*.pickle binary
+*.whl binary
+*.egg binary

@@ -152,27 +152,61 @@ class DistributedEnsembleManager:
             print(f"Running in simulated mode with {num_workers} workers (Ray not available)")
 
     def create_ensemble_workers(self, model_class, model_kwargs: Dict[str, Any]):
-        """Create distributed ensemble workers."""
+        """Create diverse distributed ensemble workers with different configurations."""
         # Calculate GPU fraction per worker (divide available GPUs among workers)
         num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
         gpu_per_worker = num_gpus / self.num_workers if num_gpus > 0 else 0
         
+        # ✅ FIX #6: ADD DIVERSITY - Different learning rates and dropout for each worker
+        learning_rates = [0.001, 0.0008, 0.0012, 0.0009][:self.num_workers]
+        dropout_rates = [0.15, 0.18, 0.12, 0.16][:self.num_workers]
+        
+        # Extend if more workers than predefined configs
+        while len(learning_rates) < self.num_workers:
+            learning_rates.append(0.001)
+            dropout_rates.append(0.15)
+        
         @ray.remote(num_gpus=gpu_per_worker)
         class EnsembleWorker:
-            def __init__(self, model_class, model_kwargs):
+            def __init__(self, model_class, model_kwargs, worker_id=0, learning_rate=0.001, dropout_rate=0.15):
+                # ✅ FIX #3: INJECT LOWER DROPOUT RATE
+                if 'dropout_rate' not in model_kwargs:
+                    model_kwargs['dropout_rate'] = dropout_rate
+                
                 self.model = model_class(**model_kwargs)
                 self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
                 self.model.to(self.device)
                 self.efficiency_score = 1.0
                 self.quantizer = AdaptiveQuantizer()
                 self.optimizer = None
+                self.scheduler = None
                 self.criterion = None
+                self.learning_rate = learning_rate
+                self.worker_id = worker_id
 
-            def setup_training(self, learning_rate=0.001):
-                """Setup optimizer and criterion for training."""
+            def setup_training(self, learning_rate=None):
+                """Setup optimizer, scheduler, and criterion for training."""
+                if learning_rate is None:
+                    learning_rate = self.learning_rate
+                
                 self.optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate)
+                
+                # ✅ FIX #5: ADD LEARNING RATE SCHEDULING
+                self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                    self.optimizer,
+                    T_max=50,  # Will be adjusted based on total epochs
+                    eta_min=1e-6
+                )
+                
                 self.criterion = torch.nn.CrossEntropyLoss()
                 return True
+            
+            def step_scheduler(self):
+                """Step the learning rate scheduler (call once per epoch)."""
+                if self.scheduler is not None:
+                    self.scheduler.step()
+                    return self.optimizer.param_groups[0]['lr']
+                return self.learning_rate
 
             def train_step(self, data_batch, targets=None):
                 # Perform actual training step using instance optimizer and criterion
@@ -187,6 +221,10 @@ class DistributedEnsembleManager:
                     outputs = self.model(data_batch)
                     loss = self.criterion(outputs, targets)
                     loss.backward()
+                    
+                    # ✅ GRADIENT CLIPPING for stability
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                    
                     self.optimizer.step()
 
                     # Update efficiency score based on actual loss
@@ -222,8 +260,17 @@ class DistributedEnsembleManager:
                     outputs = self.model(data_batch)
                     return outputs.cpu()  # Move back to CPU for aggregation
 
-        self.workers = [EnsembleWorker.remote(model_class, model_kwargs)
-                       for _ in range(self.num_workers)]
+        # Create workers with diversity
+        self.workers = []
+        for worker_id in range(self.num_workers):
+            worker = EnsembleWorker.remote(
+                model_class, 
+                model_kwargs.copy(),  # Copy to avoid mutation
+                worker_id=worker_id,
+                learning_rate=learning_rates[worker_id],
+                dropout_rate=dropout_rates[worker_id]
+            )
+            self.workers.append(worker)
 
     def setup_workers_training(self, learning_rate=0.001):
         """Setup training for all workers."""
@@ -265,7 +312,7 @@ class DistributedEnsembleManager:
         ray.get(futures)
 
     def train_ensemble(self, data_loader, num_epochs: int = 10):
-        """Train the ensemble using distributed workers."""
+        """Train the ensemble using distributed workers with FedAvg-style aggregation."""
         # Setup training for all workers
         self.setup_workers_training()
 
@@ -298,15 +345,19 @@ class DistributedEnsembleManager:
                 batch_losses = ray.get(training_futures)
                 epoch_losses.extend([loss for loss in batch_losses if loss is not None])
 
-            # Only aggregate weights at the end of training (not after each epoch)
-            # This allows each worker to learn independently
-            # if epoch == num_epochs - 1:  # Only aggregate on last epoch
-            #     aggregated_weights = self.aggregate_weights()
-            #     if aggregated_weights:
-            #         self.broadcast_weights(aggregated_weights)
+            # ✅ FIX #1: AGGREGATE WEIGHTS AFTER EACH EPOCH (FedAvg style)
+            aggregated_weights = self.aggregate_weights()
+            if aggregated_weights:
+                self.broadcast_weights(aggregated_weights)
+                self.logger.info(f"  → Weights aggregated and synchronized at epoch {epoch + 1}")
+            
+            # ✅ FIX #5: STEP LEARNING RATE SCHEDULERS
+            scheduler_futures = [worker.step_scheduler.remote() for worker in self.workers]
+            current_lrs = ray.get(scheduler_futures)
+            avg_lr = np.mean(current_lrs) if current_lrs else 0.001
 
             avg_loss = np.mean(epoch_losses) if epoch_losses else 0.0
-            print(f"Epoch {epoch + 1}/{num_epochs}, Average Loss: {avg_loss:.4f}")
+            print(f"Epoch {epoch + 1}/{num_epochs}, Average Loss: {avg_loss:.4f}, LR: {avg_lr:.6f}")
 
     def shutdown(self):
         """Shutdown the distributed ensemble manager."""
