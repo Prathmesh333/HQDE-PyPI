@@ -6,7 +6,6 @@ mechanisms for robust distributed ensemble learning.
 """
 
 import torch
-import ray
 import numpy as np
 from typing import Dict, List, Optional, Tuple, Any
 import time

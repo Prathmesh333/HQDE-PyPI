@@ -7,10 +7,8 @@ to demonstrate real-world performance on image classification tasks.
 
 import torch
 import torch.nn as nn
-import torch.optim as optim
 import torchvision
-import torchvision.transforms as transforms
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import Subset
 import numpy as np
 import time
 import logging
@@ -20,7 +18,10 @@ from typing import Dict, Any
 from hqde import (
     HQDESystem,
     create_hqde_system,
-    PerformanceMonitor
+    DataLoader as HQDEDataLoader,
+    DataLoaderConfig,
+    DataPreprocessor,
+    PerformanceMonitor,
 )
 
 # Set up logging
@@ -85,18 +86,13 @@ class CIFAR10DataManager:
         self.subset_size = subset_size
         self.batch_size = batch_size
 
-        # Data transformations
-        self.transform_train = transforms.Compose([
-            transforms.RandomHorizontalFlip(p=0.5),
-            transforms.RandomCrop(32, padding=4),
-            transforms.ToTensor(),
-            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
-        ])
-
-        self.transform_test = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
-        ])
+        self.transform_train = DataPreprocessor.cifar10_transforms(is_training=True)
+        self.transform_test = DataPreprocessor.cifar10_transforms(is_training=False)
+        self.loader_config = DataLoaderConfig(
+            batch_size=batch_size,
+            num_workers=HQDEDataLoader.recommended_num_workers(),
+            pin_memory=True,
+        )
 
         # CIFAR-10 class names
         self.class_names = [
@@ -126,12 +122,25 @@ class CIFAR10DataManager:
         test_subset = Subset(test_dataset_full, test_subset_indices)
 
         # Create data loaders
-        train_loader = DataLoader(
-            train_subset, batch_size=self.batch_size, shuffle=True, num_workers=2
+        train_loader = HQDEDataLoader.create(
+            train_subset,
+            batch_size=self.loader_config.batch_size,
+            is_training=True,
+            num_workers=self.loader_config.num_workers,
+            pin_memory=self.loader_config.pin_memory,
+            persistent_workers=self.loader_config.persistent_workers,
+            prefetch_factor=self.loader_config.prefetch_factor,
         )
 
-        test_loader = DataLoader(
-            test_subset, batch_size=self.batch_size, shuffle=False, num_workers=2
+        test_loader = HQDEDataLoader.create(
+            test_subset,
+            batch_size=self.loader_config.batch_size,
+            is_training=False,
+            num_workers=self.loader_config.num_workers,
+            pin_memory=self.loader_config.pin_memory,
+            persistent_workers=self.loader_config.persistent_workers,
+            prefetch_factor=self.loader_config.prefetch_factor,
+            drop_last=False,
         )
 
         logger.info(f"Training subset size: {len(train_subset)}")
@@ -195,10 +204,20 @@ class CIFAR10HQDETrainer:
             'noise_scale': 0.001,  # Lower noise for real training
             'exploration_factor': 0.05
         }
+        self.training_config = {
+            'learning_rate': 1e-3,
+            'optimizer': 'adamw',
+            'weight_decay': 5e-4,
+            'use_amp': True,
+            'ensemble_mode': 'independent',
+            'batch_assignment': 'replicate',
+            'prediction_aggregation': 'efficiency_weighted',
+        }
 
     def train_and_evaluate(self, train_loader, test_loader, num_epochs: int = 10):
         """Train and evaluate HQDE system on CIFAR-10."""
         logger.info("=== HQDE CIFAR-10 Training and Evaluation ===")
+        hqde_system = None
 
         # Start performance monitoring
         self.performance_monitor.start_monitoring()
@@ -211,7 +230,8 @@ class CIFAR10HQDETrainer:
                 model_kwargs=self.model_kwargs,
                 num_workers=self.num_workers,
                 quantization_config=self.quantization_config,
-                aggregation_config=self.aggregation_config
+                aggregation_config=self.aggregation_config,
+                training_config=self.training_config,
             )
 
             # Record training start event
@@ -289,7 +309,8 @@ class CIFAR10HQDETrainer:
         finally:
             # Cleanup
             logger.info("Cleaning up resources...")
-            hqde_system.cleanup()
+            if hqde_system is not None:
+                hqde_system.cleanup()
 
             # Generate performance report
             self.performance_monitor.stop_monitoring()
@@ -297,65 +318,23 @@ class CIFAR10HQDETrainer:
 
     def _train_with_real_data(self, hqde_system, train_loader, num_epochs):
         """Train HQDE system with real CIFAR-10 data."""
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        logger.info(f"Training on device: {device}")
-
-        # Monitor memory usage
-        initial_memory = torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
-
-        # Use the actual HQDE training system
         logger.info("Starting actual HQDE ensemble training with real CIFAR-10 data...")
         training_metrics = hqde_system.train(train_loader, num_epochs)
+        epoch_history = training_metrics.get('epoch_history', [])
+        for epoch_metrics in epoch_history:
+            self.performance_monitor.record_training_metric(
+                'epoch_loss',
+                epoch_metrics['loss'],
+                epoch=epoch_metrics['epoch'],
+            )
+            self.performance_monitor.record_training_metric(
+                'epoch_accuracy',
+                epoch_metrics['accuracy'],
+                epoch=epoch_metrics['epoch'],
+            )
 
-        # Track actual loss progression
-        epoch_losses = []
-        for epoch in range(num_epochs):
-            # Calculate loss on training set to track actual progress
-            epoch_loss = 0.0
-            total_samples = 0
-
-            for data, targets in train_loader:
-                data, targets = data.to(device), targets.to(device)
-
-                # Get predictions from trained ensemble
-                try:
-                    predictions = hqde_system.predict([data])
-                    if predictions.numel() > 0:
-                        criterion = torch.nn.CrossEntropyLoss()
-                        batch_loss = criterion(predictions, targets).item()
-                        epoch_loss += batch_loss * data.size(0)
-                        total_samples += data.size(0)
-                except Exception as e:
-                    logger.warning(f"Could not compute loss for epoch {epoch}: {e}")
-                    break
-
-            if total_samples > 0:
-                avg_epoch_loss = epoch_loss / total_samples
-            else:
-                # If HQDE distributed training hasn't fully converged, estimate loss
-                progress = (epoch + 1) / num_epochs
-                avg_epoch_loss = 2.5 * np.exp(-progress * 2) + 0.3
-
-            epoch_losses.append(avg_epoch_loss)
-
-            # Record epoch metrics
-            self.performance_monitor.record_training_metric('epoch_loss', avg_epoch_loss, epoch=epoch)
-
-            logger.info(f"Epoch {epoch + 1}/{num_epochs}, Average Loss: {avg_epoch_loss:.4f}")
-
-        # Calculate memory usage
-        final_memory = torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
-        memory_usage = (final_memory - initial_memory) / (1024 * 1024)  # Convert to MB
-
-        # Combine actual HQDE metrics with our tracked losses
-        combined_metrics = training_metrics.copy()
-        combined_metrics.update({
-            'epoch_losses': epoch_losses,
-            'final_loss': epoch_losses[-1] if epoch_losses else 0.0,
-            'memory_usage': memory_usage
-        })
-
-        return combined_metrics
+        training_metrics['epoch_losses'] = [epoch['loss'] for epoch in epoch_history]
+        return training_metrics
 
     def _evaluate_model(self, hqde_system, test_loader):
         """Evaluate the trained HQDE model."""

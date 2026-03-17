@@ -6,7 +6,6 @@ for efficient ensemble weight management and aggregation.
 """
 
 import torch
-import ray
 import numpy as np
 from typing import Dict, List, Optional, Tuple, Any, Callable
 import hashlib
@@ -14,6 +13,42 @@ import pickle
 import time
 from collections import defaultdict
 import logging
+
+try:
+    import ray
+    RAY_AVAILABLE = True
+except ImportError:
+    RAY_AVAILABLE = False
+
+    class _MissingRayModule:
+        @staticmethod
+        def remote(obj=None, **kwargs):
+            del kwargs
+
+            def decorator(_wrapped):
+                class _MissingRayProxy:
+                    @staticmethod
+                    def remote(*args, **kwargs):
+                        del args, kwargs
+                        raise ImportError("Ray is required to use hqde.distributed.mapreduce_ensemble.")
+
+                return _MissingRayProxy
+
+            if obj is None:
+                return decorator
+            return decorator(obj)
+
+        @staticmethod
+        def get(*args, **kwargs):
+            del args, kwargs
+            raise ImportError("Ray is required to use hqde.distributed.mapreduce_ensemble.")
+
+    ray = _MissingRayModule()
+
+
+def _require_ray():
+    if not RAY_AVAILABLE:
+        raise ImportError("Ray is required to use hqde.distributed.mapreduce_ensemble.")
 
 
 @ray.remote
@@ -170,6 +205,7 @@ class MapReduceEnsembleManager:
         self.num_mappers = num_mappers
         self.num_reducers = num_reducers
         self.replication_factor = replication_factor
+        _require_ray()
 
         # Initialize distributed components
         self.weight_stores = []

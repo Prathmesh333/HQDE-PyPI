@@ -6,13 +6,48 @@ optimization and communication-efficient ensemble weight combination.
 """
 
 import torch
-import ray
 import numpy as np
 from typing import Dict, List, Optional, Tuple, Any
 import math
 import time
 import logging
 from collections import defaultdict
+
+try:
+    import ray
+    RAY_AVAILABLE = True
+except ImportError:
+    RAY_AVAILABLE = False
+
+    class _MissingRayModule:
+        @staticmethod
+        def remote(obj=None, **kwargs):
+            del kwargs
+
+            def decorator(_wrapped):
+                class _MissingRayProxy:
+                    @staticmethod
+                    def remote(*args, **kwargs):
+                        del args, kwargs
+                        raise ImportError("Ray is required to use hqde.distributed.hierarchical_aggregator.")
+
+                return _MissingRayProxy
+
+            if obj is None:
+                return decorator
+            return decorator(obj)
+
+        @staticmethod
+        def get(*args, **kwargs):
+            del args, kwargs
+            raise ImportError("Ray is required to use hqde.distributed.hierarchical_aggregator.")
+
+    ray = _MissingRayModule()
+
+
+def _require_ray():
+    if not RAY_AVAILABLE:
+        raise ImportError("Ray is required to use hqde.distributed.hierarchical_aggregator.")
 
 
 @ray.remote
@@ -137,6 +172,7 @@ class HierarchicalAggregator:
         self.num_ensemble_members = num_ensemble_members
         self.tree_branching_factor = tree_branching_factor
         self.adaptive_topology = adaptive_topology
+        _require_ray()
 
         self.nodes = {}
         self.tree_structure = {}

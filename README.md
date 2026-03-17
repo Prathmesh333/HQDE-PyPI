@@ -83,13 +83,22 @@ class MyModel(nn.Module):
         return self.layers(x)
 
 # Create HQDE system with 4 distributed workers
+training_config = {
+    'ensemble_mode': 'independent',      # true ensemble training
+    'batch_assignment': 'replicate',     # each worker sees the full batch
+    'optimizer': 'adamw',
+    'use_amp': True,
+    'warmup_epochs': 2,
+}
+
 hqde_system = create_hqde_system(
     model_class=MyModel,
     model_kwargs={'num_classes': 10},  # dropout_rate will be auto-injected
-    num_workers=4
+    num_workers=4,
+    training_config=training_config,
 )
 
-# Train the ensemble (v0.1.5: Workers now share knowledge via FedAvg)
+# Train the ensemble
 metrics = hqde_system.train(train_loader, num_epochs=40)  #  Use 40 epochs for best results
 
 # Make predictions (ensemble voting)
@@ -99,7 +108,7 @@ predictions = hqde_system.predict(test_loader)
 hqde_system.cleanup()
 ```
 
-**What to expect in v0.1.5:**
+**Legacy fedavg-style output example:**
 ```
 Epoch 1/40, Average Loss: 2.3045, LR: 0.001000
   → Weights aggregated and synchronized at epoch 1  
@@ -113,6 +122,52 @@ python examples/quick_start.py           # Quick demo
 python examples/cifar10_synthetic_test.py # CIFAR-10 benchmark
 python examples/cifar10_test.py          # Real CIFAR-10 dataset
 ```
+
+Current releases log epoch loss, accuracy, and learning rate directly. In `independent + replicate` mode there is no epoch-end synchronization message because workers stay diverse until inference time.
+
+### Training Modes
+
+Use `training_config` to choose the training behavior that matches your workload:
+
+```python
+# True ensemble: preserve diversity, aggregate only at inference
+training_config = {
+    'ensemble_mode': 'independent',
+    'batch_assignment': 'replicate',
+}
+
+# Epoch-wise FedAvg/local-SGD style training
+training_config = {
+    'ensemble_mode': 'fedavg',
+    'batch_assignment': 'split',
+}
+```
+
+`batch_assignment='split'` is not PyTorch DDP. Each worker trains locally during the epoch, and weights are averaged only at the epoch boundary when `ensemble_mode='fedavg'`.
+
+### Training Config Notes
+
+```python
+training_config = {
+    'ensemble_mode': 'independent',
+    'batch_assignment': 'replicate',
+    'optimizer': 'adamw',
+    'learning_rate': 1e-3,
+    'weight_decay': 5e-4,
+    'use_amp': True,
+    'label_smoothing': 0.1,
+    'warmup_epochs': 2,
+    'warmup_start_factor': 0.1,
+    'compile_model': False,
+    'compile_mode': 'default',
+    'prediction_aggregation': 'efficiency_weighted',
+}
+```
+
+- Use `independent + replicate` for true ensemble training.
+- Use `fedavg + split` for epoch-wise averaging with lower memory pressure.
+- `use_amp` activates mixed precision only on CUDA devices.
+- `quantization_config` is only applied in `fedavg` mode during weight aggregation.
 
 ---
 

@@ -6,7 +6,6 @@ and adaptive task scheduling for optimal resource utilization.
 """
 
 import torch
-import ray
 import numpy as np
 import psutil
 from typing import Dict, List, Optional, Tuple, Any, Callable
@@ -14,6 +13,42 @@ import time
 import threading
 import logging
 from collections import defaultdict, deque
+
+try:
+    import ray
+    RAY_AVAILABLE = True
+except ImportError:
+    RAY_AVAILABLE = False
+
+    class _MissingRayModule:
+        @staticmethod
+        def remote(obj=None, **kwargs):
+            del kwargs
+
+            def decorator(_wrapped):
+                class _MissingRayProxy:
+                    @staticmethod
+                    def remote(*args, **kwargs):
+                        del args, kwargs
+                        raise ImportError("Ray is required to use hqde.distributed.load_balancer.")
+
+                return _MissingRayProxy
+
+            if obj is None:
+                return decorator
+            return decorator(obj)
+
+        @staticmethod
+        def get(*args, **kwargs):
+            del args, kwargs
+            raise ImportError("Ray is required to use hqde.distributed.load_balancer.")
+
+    ray = _MissingRayModule()
+
+
+def _require_ray():
+    if not RAY_AVAILABLE:
+        raise ImportError("Ray is required to use hqde.distributed.load_balancer.")
 
 
 @ray.remote
@@ -192,6 +227,7 @@ class DynamicLoadBalancer:
         self.balancing_strategy = balancing_strategy
         self.monitoring_interval = monitoring_interval
         self.load_threshold = load_threshold
+        _require_ray()
 
         self.worker_nodes = {}
         self.task_queue = deque()

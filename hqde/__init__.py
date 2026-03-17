@@ -23,18 +23,27 @@ from .quantum import (
     QuantumEnsembleOptimizer
 )
 
-# Distributed components
-from .distributed import (
-    MapReduceEnsembleManager,
-    HierarchicalAggregator,
-    ByzantineFaultTolerantAggregator,
-    DynamicLoadBalancer
-)
+# Distributed components are optional because they require Ray.
+try:
+    from .distributed import (
+        MapReduceEnsembleManager,
+        HierarchicalAggregator,
+        ByzantineFaultTolerantAggregator,
+        DynamicLoadBalancer
+    )
+except ImportError:
+    MapReduceEnsembleManager = None
+    HierarchicalAggregator = None
+    ByzantineFaultTolerantAggregator = None
+    DynamicLoadBalancer = None
 
 # Utilities
 from .utils import (
     PerformanceMonitor,
-    SystemMetrics
+    SystemMetrics,
+    DataLoader,
+    DataLoaderConfig,
+    DataPreprocessor,
 )
 
 __all__ = [
@@ -58,5 +67,8 @@ __all__ = [
 
     # Utils
     'PerformanceMonitor',
-    'SystemMetrics'
+    'SystemMetrics',
+    'DataLoader',
+    'DataLoaderConfig',
+    'DataPreprocessor',
 ]

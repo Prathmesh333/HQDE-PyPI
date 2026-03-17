@@ -1,36 +1,167 @@
 """
-HQDE (Hierarchical Quantum-Distributed Ensemble Learning) Core System
+HQDE (Hierarchical Quantum-Distributed Ensemble Learning) Core System.
 
-This module implements the main HQDE framework with quantum-inspired algorithms,
-distributed ensemble learning, and adaptive quantization.
+This module implements the main HQDE framework with a practical ensemble
+training loop, prediction aggregation, and checkpoint handling.
 """
 
-import torch
-import torch.nn as nn
-import numpy as np
-from typing import Dict, List, Optional, Tuple, Any
-from collections import defaultdict
+from __future__ import annotations
+
+from contextlib import nullcontext
+import inspect
 import logging
 import time
-from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
+import torch
+import torch.nn as nn
 
 # Try to import optional dependencies for notebook compatibility
 try:
     import ray
     RAY_AVAILABLE = True
 except ImportError:
+    ray = None
     RAY_AVAILABLE = False
 
 try:
     import psutil
     PSUTIL_AVAILABLE = True
 except ImportError:
+    psutil = None
     PSUTIL_AVAILABLE = False
 
+LOGGER = logging.getLogger(__name__)
+
 if not RAY_AVAILABLE:
-    print("Warning: Ray not available. Some distributed features will be disabled.")
+    LOGGER.warning("Ray is not available. HQDE will run in local worker mode.")
 if not PSUTIL_AVAILABLE:
-    print("Warning: psutil not available. Memory monitoring features will be disabled.")
+    LOGGER.warning("psutil is not available. Memory monitoring will be disabled.")
+
+DEFAULT_TRAINING_CONFIG: Dict[str, Any] = {
+    "learning_rate": 1e-3,
+    "optimizer": "adamw",
+    "weight_decay": 1e-4,
+    "min_learning_rate": 1e-6,
+    "warmup_epochs": 0,
+    "warmup_start_factor": 0.1,
+    "label_smoothing": 0.0,
+    "gradient_clip_norm": 1.0,
+    "use_amp": True,
+    "compile_model": False,
+    "compile_mode": "default",
+    "ensemble_mode": "independent",
+    "batch_assignment": "replicate",
+    "prediction_aggregation": "efficiency_weighted",
+}
+
+VALID_OPTIMIZERS = {"sgd", "adam", "adamw"}
+VALID_ENSEMBLE_MODES = {"independent", "fedavg"}
+VALID_BATCH_ASSIGNMENTS = {"replicate", "split"}
+VALID_PREDICTION_AGGREGATIONS = {"efficiency_weighted", "mean"}
+VALID_COMPILE_MODES = {"default", "reduce-overhead", "max-autotune"}
+
+
+def validate_training_config(training_config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Normalize and validate HQDE training configuration.
+
+    Examples:
+        True ensemble training:
+            {
+                "ensemble_mode": "independent",
+                "batch_assignment": "replicate",
+                "optimizer": "adamw",
+                "use_amp": True,
+            }
+
+        Epoch-wise FedAvg/local-SGD style training:
+            {
+                "ensemble_mode": "fedavg",
+                "batch_assignment": "split",
+                "warmup_epochs": 2,
+            }
+
+    Supported keys:
+        learning_rate: positive float optimizer learning rate.
+        optimizer: one of {"sgd", "adam", "adamw"}.
+        weight_decay: non-negative float regularization coefficient.
+        min_learning_rate: non-negative cosine-scheduler floor.
+        warmup_epochs: non-negative integer number of warmup epochs.
+        warmup_start_factor: float in (0, 1] for LinearLR warmup start.
+        label_smoothing: float in [0, 1).
+        gradient_clip_norm: non-negative float clip threshold, 0 disables clipping.
+        use_amp: bool enabling CUDA mixed precision.
+        compile_model: bool enabling torch.compile when available.
+        compile_mode: one of {"default", "reduce-overhead", "max-autotune"}.
+        ensemble_mode: "independent" for diverse ensembles or "fedavg" for epoch-wise averaging.
+        batch_assignment: "replicate" for true ensemble training or "split" for local-SGD style batches.
+        prediction_aggregation: "efficiency_weighted" or "mean".
+    """
+    config = dict(DEFAULT_TRAINING_CONFIG)
+    config.update(training_config or {})
+
+    config["optimizer"] = str(config["optimizer"]).lower()
+    config["ensemble_mode"] = str(config["ensemble_mode"]).lower()
+    config["batch_assignment"] = str(config["batch_assignment"]).lower()
+    config["prediction_aggregation"] = str(config["prediction_aggregation"]).lower()
+
+    if config["optimizer"] not in VALID_OPTIMIZERS:
+        raise ValueError(
+            f"Unsupported optimizer '{config['optimizer']}'. Expected one of {sorted(VALID_OPTIMIZERS)}."
+        )
+    if config["ensemble_mode"] not in VALID_ENSEMBLE_MODES:
+        raise ValueError(
+            f"Unsupported ensemble_mode '{config['ensemble_mode']}'. Expected one of {sorted(VALID_ENSEMBLE_MODES)}."
+        )
+    if config["batch_assignment"] not in VALID_BATCH_ASSIGNMENTS:
+        raise ValueError(
+            "Unsupported batch_assignment "
+            f"'{config['batch_assignment']}'. Expected one of {sorted(VALID_BATCH_ASSIGNMENTS)}."
+        )
+    if config["prediction_aggregation"] not in VALID_PREDICTION_AGGREGATIONS:
+        raise ValueError(
+            "Unsupported prediction_aggregation "
+            f"'{config['prediction_aggregation']}'. Expected one of {sorted(VALID_PREDICTION_AGGREGATIONS)}."
+        )
+    config["compile_mode"] = str(config["compile_mode"]).lower()
+    if config["compile_mode"] not in VALID_COMPILE_MODES:
+        raise ValueError(
+            f"Unsupported compile_mode '{config['compile_mode']}'. Expected one of {sorted(VALID_COMPILE_MODES)}."
+        )
+
+    numeric_constraints = {
+        "learning_rate": (0.0, False),
+        "weight_decay": (0.0, True),
+        "min_learning_rate": (0.0, True),
+        "gradient_clip_norm": (0.0, True),
+        "warmup_start_factor": (0.0, False),
+    }
+    for key, (minimum, inclusive) in numeric_constraints.items():
+        value = float(config[key])
+        if inclusive:
+            if value < minimum:
+                raise ValueError(f"{key} must be >= {minimum}, got {value}.")
+        elif value <= minimum:
+            raise ValueError(f"{key} must be > {minimum}, got {value}.")
+        config[key] = value
+
+    config["label_smoothing"] = float(config["label_smoothing"])
+    if not 0.0 <= config["label_smoothing"] < 1.0:
+        raise ValueError(f"label_smoothing must be in [0.0, 1.0), got {config['label_smoothing']}.")
+
+    config["warmup_epochs"] = int(config["warmup_epochs"])
+    if config["warmup_epochs"] < 0:
+        raise ValueError(f"warmup_epochs must be >= 0, got {config['warmup_epochs']}.")
+    if config["warmup_start_factor"] > 1.0:
+        raise ValueError(
+            f"warmup_start_factor must be <= 1.0, got {config['warmup_start_factor']}."
+        )
+
+    config["use_amp"] = bool(config["use_amp"])
+    config["compile_model"] = bool(config["compile_model"])
+    return config
 
 class AdaptiveQuantizer:
     """Adaptive weight quantization based on real-time importance scoring."""
@@ -121,424 +252,612 @@ class QuantumInspiredAggregator:
         if not weight_list or not efficiency_scores:
             raise ValueError("Empty weight list or efficiency scores")
 
-        # Normalize efficiency scores
-        efficiency_tensor = torch.tensor(efficiency_scores, dtype=torch.float32)
-        efficiency_weights = torch.softmax(efficiency_tensor, dim=0)
+        if len(efficiency_scores) != len(weight_list):
+            efficiency_scores = [1.0] * len(weight_list)
 
-        # Simple averaging (more stable than efficiency weighting with noise)
-        aggregated = torch.stack(weight_list).mean(dim=0)
+        reference_device = weight_list[0].device
+        stacked = torch.stack([tensor.to(reference_device) for tensor in weight_list], dim=0)
+        weights = torch.tensor(efficiency_scores, dtype=torch.float32, device=reference_device)
+        weights = torch.softmax(weights, dim=0)
+        reshape_dims = (weights.shape[0],) + (1,) * (stacked.dim() - 1)
+        return (stacked * weights.view(reshape_dims)).sum(dim=0)
 
-        # No quantum noise during weight aggregation to preserve learned features
-        # aggregated = self.quantum_noise_injection(aggregated)
+class _EnsembleWorkerBase:
+    """Single ensemble member used locally or behind a Ray actor."""
 
-        return aggregated
+    def __init__(
+        self,
+        model_class,
+        model_kwargs: Dict[str, Any],
+        worker_id: int = 0,
+        learning_rate: float = 1e-3,
+        dropout_rate: float = 0.15,
+        training_config: Optional[Dict[str, Any]] = None,
+    ):
+        self.training_config = validate_training_config(training_config)
+
+        model_init_params = inspect.signature(model_class.__init__).parameters
+        supports_dropout = "dropout_rate" in model_init_params
+        worker_model_kwargs = dict(model_kwargs)
+        if supports_dropout and "dropout_rate" not in worker_model_kwargs:
+            worker_model_kwargs["dropout_rate"] = dropout_rate
+
+        self.model = model_class(**worker_model_kwargs)
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model.to(self.device)
+        if self.device.type == "cuda":
+            self.model = self.model.to(memory_format=torch.channels_last)
+        if self.training_config.get("compile_model", False) and hasattr(torch, "compile"):
+            self.model = torch.compile(
+                self.model,
+                mode=str(self.training_config.get("compile_mode", "default")),
+            )
+
+        self.efficiency_score = 1.0
+        self.optimizer = None
+        self.scheduler = None
+        self.criterion = None
+        self.scaler = None
+        self.learning_rate = learning_rate
+        self.worker_id = worker_id
+
+    def setup_training(self, learning_rate: Optional[float] = None, total_epochs: int = 1):
+        """Setup optimizer, scheduler, and criterion for training."""
+        learning_rate = learning_rate or self.learning_rate
+        optimizer_name = str(self.training_config.get("optimizer", "adamw")).lower()
+        weight_decay = float(self.training_config.get("weight_decay", 1e-4))
+
+        if optimizer_name == "sgd":
+            self.optimizer = torch.optim.SGD(
+                self.model.parameters(),
+                lr=learning_rate,
+                momentum=0.9,
+                nesterov=True,
+                weight_decay=weight_decay,
+            )
+        elif optimizer_name == "adam":
+            self.optimizer = torch.optim.Adam(
+                self.model.parameters(),
+                lr=learning_rate,
+                weight_decay=weight_decay,
+            )
+        else:
+            self.optimizer = torch.optim.AdamW(
+                self.model.parameters(),
+                lr=learning_rate,
+                weight_decay=weight_decay,
+            )
+
+        warmup_epochs = min(int(self.training_config.get("warmup_epochs", 0)), max(int(total_epochs), 1))
+        cosine_epochs = max(int(total_epochs) - warmup_epochs, 1)
+        cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.optimizer,
+            T_max=cosine_epochs,
+            eta_min=float(self.training_config.get("min_learning_rate", 1e-6)),
+        )
+        if warmup_epochs > 0:
+            warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+                self.optimizer,
+                start_factor=float(self.training_config.get("warmup_start_factor", 0.1)),
+                end_factor=1.0,
+                total_iters=warmup_epochs,
+            )
+            self.scheduler = torch.optim.lr_scheduler.SequentialLR(
+                self.optimizer,
+                schedulers=[warmup_scheduler, cosine_scheduler],
+                milestones=[warmup_epochs],
+            )
+        else:
+            self.scheduler = cosine_scheduler
+        self.criterion = nn.CrossEntropyLoss(
+            label_smoothing=float(self.training_config.get("label_smoothing", 0.0))
+        )
+
+        use_amp = bool(self.training_config.get("use_amp", True)) and self.device.type == "cuda"
+        self.scaler = torch.cuda.amp.GradScaler(enabled=use_amp) if use_amp else None
+        return True
+
+    def step_scheduler(self) -> float:
+        """Step the learning rate scheduler once per epoch."""
+        if self.scheduler is not None and self.optimizer is not None:
+            self.scheduler.step()
+            return float(self.optimizer.param_groups[0]["lr"])
+        return float(self.learning_rate)
+
+    def train_step(self, data_batch, targets=None):
+        """Run a single training step and return batch metrics."""
+        if data_batch is None or targets is None:
+            return None
+        if self.optimizer is None or self.criterion is None:
+            raise RuntimeError("Worker training has not been initialized. Call setup_training first.")
+
+        self.model.train()
+        data_batch = data_batch.to(self.device, non_blocking=True)
+        targets = targets.to(self.device, non_blocking=True)
+        if self.device.type == "cuda" and data_batch.ndim == 4:
+            data_batch = data_batch.contiguous(memory_format=torch.channels_last)
+
+        amp_enabled = self.scaler is not None and self.device.type == "cuda"
+        autocast_context = (
+            torch.autocast(device_type="cuda", dtype=torch.float16, enabled=True)
+            if amp_enabled
+            else nullcontext()
+        )
+
+        self.optimizer.zero_grad(set_to_none=True)
+        with autocast_context:
+            outputs = self.model(data_batch)
+            loss = self.criterion(outputs, targets)
+
+        clip_norm = float(self.training_config.get("gradient_clip_norm", 1.0))
+        if amp_enabled and self.scaler is not None:
+            self.scaler.scale(loss).backward()
+            self.scaler.unscale_(self.optimizer)
+            if clip_norm > 0:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=clip_norm)
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        else:
+            loss.backward()
+            if clip_norm > 0:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=clip_norm)
+            self.optimizer.step()
+
+        with torch.no_grad():
+            predictions = outputs.argmax(dim=1)
+            accuracy = (predictions == targets).float().mean().item()
+            loss_value = float(loss.item())
+            self.efficiency_score = 0.9 * self.efficiency_score + 0.1 * max(
+                accuracy,
+                1.0 / (1.0 + loss_value),
+            )
+
+        return {
+            "loss": loss_value,
+            "accuracy": float(accuracy),
+            "num_samples": int(targets.size(0)),
+        }
+
+    def get_weights(self):
+        """Return a CPU copy of the full model state."""
+        return {
+            name: tensor.detach().cpu().clone()
+            for name, tensor in self.model.state_dict().items()
+        }
+
+    def set_weights(self, weights_dict):
+        """Load a state dict into the worker model."""
+        current_state = self.model.state_dict()
+        updated_state = {}
+        for name, tensor in current_state.items():
+            updated_state[name] = weights_dict.get(name, tensor).to(self.device)
+        self.model.load_state_dict(updated_state, strict=False)
+        return True
+
+    def get_efficiency_score(self):
+        """Return the current worker efficiency score."""
+        return float(self.efficiency_score)
+
+    def predict(self, data_batch):
+        """Make predictions on data batch."""
+        self.model.eval()
+        data_batch = data_batch.to(self.device, non_blocking=True)
+        if self.device.type == "cuda" and data_batch.ndim == 4:
+            data_batch = data_batch.contiguous(memory_format=torch.channels_last)
+
+        with torch.no_grad():
+            outputs = self.model(data_batch)
+        return outputs.detach().cpu()
+
+    def get_checkpoint(self):
+        """Return a serializable worker checkpoint."""
+        return {
+            "worker_id": self.worker_id,
+            "learning_rate": self.learning_rate,
+            "efficiency_score": self.efficiency_score,
+            "model_state_dict": self.get_weights(),
+        }
+
+    def load_checkpoint(self, checkpoint):
+        """Load a worker checkpoint."""
+        if "model_state_dict" in checkpoint:
+            self.set_weights(checkpoint["model_state_dict"])
+        self.efficiency_score = float(checkpoint.get("efficiency_score", self.efficiency_score))
+        self.learning_rate = float(checkpoint.get("learning_rate", self.learning_rate))
+        return True
+
+
+if RAY_AVAILABLE:
+
+    @ray.remote
+    class RayEnsembleWorker(_EnsembleWorkerBase):
+        """Ray actor wrapper around the local ensemble worker implementation."""
+
+        pass
+
+else:
+    RayEnsembleWorker = None
+
 
 class DistributedEnsembleManager:
-    """Manages distributed ensemble learning with Ray."""
+    """Manage distributed or local ensemble workers."""
 
-    def __init__(self, num_workers: int = 4):
+    def __init__(
+        self,
+        num_workers: int = 4,
+        training_config: Optional[Dict[str, Any]] = None,
+        quantization_config: Optional[Dict[str, Any]] = None,
+    ):
         self.num_workers = num_workers
         self.workers = []
-        self.quantizer = AdaptiveQuantizer()
+        self.training_config = validate_training_config(training_config)
+        self.quantizer = (
+            AdaptiveQuantizer(**(quantization_config or {}))
+            if self.training_config["ensemble_mode"] == "fedavg"
+            else None
+        )
         self.aggregator = QuantumInspiredAggregator()
-        self.use_ray = RAY_AVAILABLE
+        self.last_compression_ratio = 1.0
+        self.use_ray = bool(RAY_AVAILABLE)
         self.logger = logging.getLogger(__name__)
 
-        # Initialize Ray if not already initialized and available
+        if self.use_ray and ray is not None and not ray.is_initialized():
+            ray.init(ignore_reinit_error=True, log_to_driver=False)
+
+    def _worker_call(self, worker, method_name: str, *args, **kwargs):
+        method = getattr(worker, method_name)
         if self.use_ray:
-            if not ray.is_initialized():
-                ray.init(ignore_reinit_error=True)
-        else:
-            print(f"Running in simulated mode with {num_workers} workers (Ray not available)")
+            return method.remote(*args, **kwargs)
+        return method(*args, **kwargs)
+
+    def _resolve(self, values):
+        if self.use_ray:
+            return ray.get(values)
+        return values
+
+    def _build_worker_batches(self, data: torch.Tensor, targets: torch.Tensor):
+        batch_assignment = str(self.training_config.get("batch_assignment", "replicate")).lower()
+        if batch_assignment == "split":
+            data_chunks = torch.tensor_split(data, self.num_workers, dim=0)
+            target_chunks = torch.tensor_split(targets, self.num_workers, dim=0)
+            return [
+                (data_chunk, target_chunk)
+                for data_chunk, target_chunk in zip(data_chunks, target_chunks)
+                if data_chunk.size(0) > 0
+            ]
+        return [(data, targets) for _ in range(self.num_workers)]
 
     def create_ensemble_workers(self, model_class, model_kwargs: Dict[str, Any]):
-        """Create diverse distributed ensemble workers with different configurations."""
-        # Calculate GPU fraction per worker (divide available GPUs among workers)
-        num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
-        gpu_per_worker = num_gpus / self.num_workers if num_gpus > 0 else 0
-        
-        # FIX #6: ADD DIVERSITY - Different learning rates and dropout for each worker
-        # Diversity is KEY to ensemble power - each worker should learn differently
-        learning_rates = [0.001, 0.0008, 0.0012, 0.0009][:self.num_workers]  # Different LRs
-        dropout_rates = [0.10, 0.12, 0.15, 0.13][:self.num_workers]  # Lower dropout for ensembles
-        
-        # Extend if more workers than predefined configs
-        while len(learning_rates) < self.num_workers:
-            learning_rates.append(0.001)
+        """Create ensemble workers with small learning-rate and dropout variation."""
+        base_lr = float(self.training_config.get("learning_rate", 1e-3))
+        lr_multipliers = [1.0, 0.85, 1.15, 0.95]
+        dropout_rates = [0.10, 0.12, 0.15, 0.13]
+
+        while len(lr_multipliers) < self.num_workers:
+            lr_multipliers.append(1.0)
             dropout_rates.append(0.12)
-        
-        @ray.remote(num_gpus=gpu_per_worker)
-        class EnsembleWorker:
-            def __init__(self, model_class, model_kwargs, worker_id=0, learning_rate=0.001, dropout_rate=0.15):
-                # FIX #3: INJECT LOWER DROPOUT RATE (only if model supports it)
-                import inspect
-                
-                # Check if model's __init__ accepts dropout_rate parameter
-                model_init_params = inspect.signature(model_class.__init__).parameters
-                supports_dropout = 'dropout_rate' in model_init_params
-                
-                # Make a copy to avoid mutating the original
-                worker_model_kwargs = model_kwargs.copy()
-                
-                # Only inject dropout_rate if model supports it and it's not already set
-                if supports_dropout and 'dropout_rate' not in worker_model_kwargs:
-                    worker_model_kwargs['dropout_rate'] = dropout_rate
-                
-                self.model = model_class(**worker_model_kwargs)
-                self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-                self.model.to(self.device)
-                self.efficiency_score = 1.0
-                self.quantizer = AdaptiveQuantizer()
-                self.optimizer = None
-                self.scheduler = None
-                self.criterion = None
-                self.learning_rate = learning_rate
-                self.worker_id = worker_id
 
-            def setup_training(self, learning_rate=None):
-                """Setup optimizer, scheduler, and criterion for training."""
-                if learning_rate is None:
-                    learning_rate = self.learning_rate
-                
-                self.optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate)
-                
-                #  FIX #5: ADD LEARNING RATE SCHEDULING
-                self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                    self.optimizer,
-                    T_max=50,  # Will be adjusted based on total epochs
-                    eta_min=1e-6
-                )
-                
-                self.criterion = torch.nn.CrossEntropyLoss()
-                return True
-            
-            def step_scheduler(self):
-                """Step the learning rate scheduler (call once per epoch)."""
-                if self.scheduler is not None:
-                    self.scheduler.step()
-                    return self.optimizer.param_groups[0]['lr']
-                return self.learning_rate
-
-            def train_step(self, data_batch, targets=None):
-                # Perform actual training step using instance optimizer and criterion
-                if data_batch is not None and targets is not None and self.optimizer is not None and self.criterion is not None:
-                    self.model.train()
-
-                    # Move data to the correct device
-                    data_batch = data_batch.to(self.device)
-                    targets = targets.to(self.device)
-
-                    self.optimizer.zero_grad()
-                    outputs = self.model(data_batch)
-                    loss = self.criterion(outputs, targets)
-                    loss.backward()
-                    
-                    #  GRADIENT CLIPPING for stability
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-                    
-                    self.optimizer.step()
-
-                    # Update efficiency score based on actual loss
-                    self.efficiency_score = max(0.1, self.efficiency_score * 0.99 + 0.01 * (1.0 / (1.0 + loss.item())))
-                    return loss.item()
-                else:
-                    # Fallback for when setup hasn't been called
-                    loss = torch.randn(1).item() * 0.5 + 1.0  # More realistic loss range
-                    self.efficiency_score = max(0.1, self.efficiency_score * 0.99 + 0.01 * (1.0 / (1.0 + loss)))
-                    return loss
-
-            def get_weights(self):
-                return {name: param.data.cpu().clone() for name, param in self.model.named_parameters()}
-
-            def set_weights(self, weights_dict):
-                for name, param in self.model.named_parameters():
-                    if name in weights_dict:
-                        # Move weights to the correct device before copying
-                        weight_tensor = weights_dict[name].to(self.device)
-                        param.data.copy_(weight_tensor)
-
-            def get_efficiency_score(self):
-                return self.efficiency_score
-
-            def predict(self, data_batch):
-                """Make predictions on data batch."""
-                self.model.eval()
-
-                # Move data to the correct device
-                data_batch = data_batch.to(self.device)
-
-                with torch.no_grad():
-                    outputs = self.model(data_batch)
-                    return outputs.cpu()  # Move back to CPU for aggregation
-
-        # Create workers with diversity
         self.workers = []
+        gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        gpu_per_worker = (gpu_count / self.num_workers) if gpu_count > 0 else 0
+
         for worker_id in range(self.num_workers):
-            worker = EnsembleWorker.remote(
-                model_class, 
-                model_kwargs.copy(),  # Copy to avoid mutation
-                worker_id=worker_id,
-                learning_rate=learning_rates[worker_id],
-                dropout_rate=dropout_rates[worker_id]
-            )
+            worker_kwargs = {
+                "model_class": model_class,
+                "model_kwargs": dict(model_kwargs),
+                "worker_id": worker_id,
+                "learning_rate": base_lr * lr_multipliers[worker_id],
+                "dropout_rate": dropout_rates[worker_id],
+                "training_config": self.training_config,
+            }
+            if self.use_ray and RayEnsembleWorker is not None:
+                worker = RayEnsembleWorker.options(num_gpus=gpu_per_worker).remote(**worker_kwargs)
+            else:
+                worker = _EnsembleWorkerBase(**worker_kwargs)
             self.workers.append(worker)
 
-    def setup_workers_training(self, learning_rate=0.001):
+    def setup_workers_training(self, learning_rate: Optional[float] = None, total_epochs: int = 1):
         """Setup training for all workers."""
-        setup_futures = [worker.setup_training.remote(learning_rate) for worker in self.workers]
-        ray.get(setup_futures)
-        self.logger.info(f"Training setup completed for {self.num_workers} workers")
+        learning_rate = learning_rate or float(self.training_config.get("learning_rate", 1e-3))
+        setup_calls = [
+            self._worker_call(worker, "setup_training", learning_rate, total_epochs)
+            for worker in self.workers
+        ]
+        self._resolve(setup_calls)
+        self.logger.info("Training setup completed for %s workers", self.num_workers)
 
     def aggregate_weights(self) -> Dict[str, torch.Tensor]:
-        """Aggregate weights from all workers."""
-        # Get weights and efficiency scores from workers
-        weight_futures = [worker.get_weights.remote() for worker in self.workers]
-        efficiency_futures = [worker.get_efficiency_score.remote() for worker in self.workers]
-
-        all_weights = ray.get(weight_futures)
-        efficiency_scores = ray.get(efficiency_futures)
-
+        """Aggregate model states from all workers."""
+        all_weights = self._resolve([self._worker_call(worker, "get_weights") for worker in self.workers])
+        efficiency_scores = self.get_efficiency_scores()
         if not all_weights:
             return {}
 
-        # Aggregate each parameter separately
         aggregated_weights = {}
-        param_names = all_weights[0].keys()
-
-        for param_name in param_names:
-            # Collect parameter tensors from all workers
+        compression_ratios = []
+        for param_name in all_weights[0].keys():
             param_tensors = [weights[param_name] for weights in all_weights]
-
-            # Direct averaging without quantization to preserve learned weights
-            stacked_params = torch.stack(param_tensors)
-            aggregated_param = stacked_params.mean(dim=0)
-
-            aggregated_weights[param_name] = aggregated_param
-
+            if self.quantizer is not None:
+                quantized_tensors = []
+                for tensor in param_tensors:
+                    importance = self.quantizer.compute_importance_score(tensor)
+                    dequantized, metadata = self.quantizer.adaptive_quantize(tensor, importance)
+                    quantized_tensors.append(dequantized)
+                    compression_ratios.append(float(metadata.get("compression_ratio", 1.0)))
+                param_tensors = quantized_tensors
+            aggregated_weights[param_name] = self.aggregator.efficiency_weighted_aggregation(
+                param_tensors,
+                efficiency_scores,
+            )
+        self.last_compression_ratio = (
+            float(np.mean(compression_ratios)) if compression_ratios else 1.0
+        )
         return aggregated_weights
 
     def broadcast_weights(self, weights: Dict[str, torch.Tensor]):
-        """Broadcast aggregated weights to all workers."""
-        futures = [worker.set_weights.remote(weights) for worker in self.workers]
-        ray.get(futures)
+        """Broadcast weights to every worker."""
+        calls = [self._worker_call(worker, "set_weights", weights) for worker in self.workers]
+        self._resolve(calls)
+
+    def get_efficiency_scores(self) -> List[float]:
+        """Collect efficiency scores for all workers."""
+        if not self.workers:
+            return []
+        return self._resolve([self._worker_call(worker, "get_efficiency_score") for worker in self.workers])
+
+    def get_worker_checkpoints(self):
+        """Collect per-worker checkpoints."""
+        return self._resolve([self._worker_call(worker, "get_checkpoint") for worker in self.workers])
+
+    def get_quantization_metrics(self) -> Dict[str, float]:
+        """Return communication quantization metrics for aggregation-enabled modes."""
+        return {"compression_ratio": float(self.last_compression_ratio)}
+
+    def load_worker_checkpoints(self, checkpoints):
+        """Restore workers from per-worker checkpoints."""
+        if not checkpoints:
+            return
+        calls = []
+        for worker, checkpoint in zip(self.workers, checkpoints):
+            calls.append(self._worker_call(worker, "load_checkpoint", checkpoint))
+        self._resolve(calls)
 
     def train_ensemble(self, data_loader, num_epochs: int = 10):
-        """Train the ensemble using distributed workers."""
-        # Setup training for all workers
-        self.setup_workers_training()
+        """Train the ensemble using distributed or local workers."""
+        self.setup_workers_training(total_epochs=num_epochs)
+        epoch_history = []
+        ensemble_mode = str(self.training_config.get("ensemble_mode", "independent")).lower()
 
         for epoch in range(num_epochs):
-            epoch_losses = []
+            epoch_loss_sum = 0.0
+            epoch_accuracy_sum = 0.0
+            epoch_samples = 0
 
-            # Train on actual data
-            for batch_idx, (data, targets) in enumerate(data_loader):
-                # Split data across workers
-                batch_size_per_worker = len(data) // self.num_workers
-                training_futures = []
+            for batch in data_loader:
+                if not isinstance(batch, (list, tuple)) or len(batch) < 2:
+                    raise ValueError("Training batches must contain at least (data, targets)")
 
-                for worker_id, worker in enumerate(self.workers):
-                    start_idx = worker_id * batch_size_per_worker
-                    end_idx = (worker_id + 1) * batch_size_per_worker if worker_id < self.num_workers - 1 else len(data)
+                data, targets = batch[0], batch[1]
+                worker_batches = self._build_worker_batches(data, targets)
+                active_workers = self.workers[: len(worker_batches)]
+                calls = [
+                    self._worker_call(worker, "train_step", worker_data, worker_targets)
+                    for worker, (worker_data, worker_targets) in zip(active_workers, worker_batches)
+                ]
+                batch_results = self._resolve(calls)
 
-                    if start_idx < len(data):
-                        worker_data = data[start_idx:end_idx]
-                        worker_targets = targets[start_idx:end_idx]
+                for result in batch_results:
+                    if not result:
+                        continue
+                    num_samples = int(result["num_samples"])
+                    epoch_loss_sum += float(result["loss"]) * num_samples
+                    epoch_accuracy_sum += float(result["accuracy"]) * num_samples
+                    epoch_samples += num_samples
 
-                        # Train on actual data
-                        training_futures.append(worker.train_step.remote(
-                            worker_data, worker_targets
-                        ))
-                    else:
-                        # Fallback for workers without data
-                        training_futures.append(worker.train_step.remote(None))
+            if ensemble_mode == "fedavg":
+                aggregated_weights = self.aggregate_weights()
+                if aggregated_weights:
+                    self.broadcast_weights(aggregated_weights)
 
-                # Wait for training to complete
-                batch_losses = ray.get(training_futures)
-                epoch_losses.extend([loss for loss in batch_losses if loss is not None])
+            current_lrs = self._resolve([self._worker_call(worker, "step_scheduler") for worker in self.workers])
+            avg_lr = float(np.mean(current_lrs)) if current_lrs else float(
+                self.training_config.get("learning_rate", 1e-3)
+            )
+            avg_loss = epoch_loss_sum / epoch_samples if epoch_samples else 0.0
+            avg_accuracy = epoch_accuracy_sum / epoch_samples if epoch_samples else 0.0
 
-            # CRITICAL FIX: DO NOT aggregate during training!
-            # Ensembles work by having DIVERSE models that specialize on different patterns
-            # Aggregating weights destroys this diversity and makes all workers identical
-            # Instead, let each worker learn independently and combine predictions at inference
-            # 
-            # Traditional ensemble approach:
-            # 1. Train N diverse models independently
-            # 2. Each model specializes on different aspects of the data
-            # 3. Combine predictions (voting/averaging) at inference time
-            # 4. Diversity is the KEY to ensemble power
-            #
-            # What FedAvg does (WRONG for ensembles):
-            # 1. Train N models independently
-            # 2. Average their weights periodically
-            # 3. All models become identical
-            # 4. Lose ensemble diversity and power
-            #
-            # Only aggregate at the very end if you want a single final model
-            # For ensemble inference, keep workers diverse!
-            pass  # No aggregation during training
-            
-            # Step learning rate schedulers
-            scheduler_futures = [worker.step_scheduler.remote() for worker in self.workers]
-            current_lrs = ray.get(scheduler_futures)
-            avg_lr = np.mean(current_lrs) if current_lrs else 0.001
+            epoch_metrics = {
+                "epoch": epoch + 1,
+                "loss": avg_loss,
+                "accuracy": avg_accuracy,
+                "learning_rate": avg_lr,
+            }
+            epoch_history.append(epoch_metrics)
+            self.logger.info(
+                "Epoch %s/%s - loss: %.4f - accuracy: %.4f - lr: %.6f",
+                epoch + 1,
+                num_epochs,
+                avg_loss,
+                avg_accuracy,
+                avg_lr,
+            )
 
-            avg_loss = np.mean(epoch_losses) if epoch_losses else 0.0
-            print(f"Epoch {epoch + 1}/{num_epochs}, Average Loss: {avg_loss:.4f}, LR: {avg_lr:.6f}")
+        return epoch_history
 
     def shutdown(self):
         """Shutdown the distributed ensemble manager."""
-        ray.shutdown()
+        self.workers = []
+        if self.use_ray and ray is not None and ray.is_initialized():
+            ray.shutdown()
 
 class HQDESystem:
-    """Main HQDE (Hierarchical Quantum-Distributed Ensemble Learning) System."""
+    """Main HQDE (Hierarchical Quantum-Distributed Ensemble Learning) system."""
 
-    def __init__(self,
-                 model_class,
-                 model_kwargs: Dict[str, Any],
-                 num_workers: int = 4,
-                 quantization_config: Optional[Dict[str, Any]] = None,
-                 aggregation_config: Optional[Dict[str, Any]] = None):
+    def __init__(
+        self,
+        model_class,
+        model_kwargs: Dict[str, Any],
+        num_workers: int = 4,
+        quantization_config: Optional[Dict[str, Any]] = None,
+        aggregation_config: Optional[Dict[str, Any]] = None,
+        training_config: Optional[Dict[str, Any]] = None,
+    ):
         """
-        Initialize HQDE System.
+        Initialize the HQDE system.
 
         Args:
-            model_class: The model class to use for ensemble members
-            model_kwargs: Keyword arguments for model initialization
-            num_workers: Number of distributed workers
-            quantization_config: Configuration for adaptive quantization
-            aggregation_config: Configuration for quantum-inspired aggregation
+            model_class: PyTorch module class used for each ensemble member.
+            model_kwargs: Keyword arguments used to initialize `model_class`.
+            num_workers: Number of ensemble members to create.
+            quantization_config: Optional AdaptiveQuantizer configuration.
+            aggregation_config: Optional QuantumInspiredAggregator configuration.
+            training_config: Optional training configuration. See
+                `validate_training_config` for supported keys and accepted values.
         """
         self.model_class = model_class
-        self.model_kwargs = model_kwargs
+        self.model_kwargs = dict(model_kwargs)
         self.num_workers = num_workers
-
-        # Initialize components
-        self.quantizer = AdaptiveQuantizer(**(quantization_config or {}))
+        self.training_config = validate_training_config(training_config)
+        self.quantization_config = dict(quantization_config or {}) if quantization_config is not None else None
         self.aggregator = QuantumInspiredAggregator(**(aggregation_config or {}))
-        self.ensemble_manager = DistributedEnsembleManager(num_workers)
+        self.ensemble_manager = DistributedEnsembleManager(
+            num_workers=num_workers,
+            training_config=self.training_config,
+            quantization_config=self.quantization_config,
+        )
+        self.quantizer = self.ensemble_manager.quantizer
 
-        # Performance monitoring
-        self.metrics = {
-            'training_time': 0.0,
-            'communication_overhead': 0.0,
-            'memory_usage': 0.0,
-            'compression_ratio': 1.0
+        self.metrics: Dict[str, Any] = {
+            "training_time": 0.0,
+            "communication_overhead": 0.0,
+            "memory_usage": 0.0,
+            "compression_ratio": 1.0,
+            "epoch_history": [],
         }
-
         self.logger = logging.getLogger(__name__)
 
     def initialize_ensemble(self):
-        """Initialize the distributed ensemble."""
-        self.logger.info(f"Initializing HQDE ensemble with {self.num_workers} workers")
+        """Initialize the ensemble workers."""
+        self.logger.info("Initializing HQDE ensemble with %s workers", self.num_workers)
         self.ensemble_manager.create_ensemble_workers(self.model_class, self.model_kwargs)
 
     def train(self, data_loader, num_epochs: int = 10, validation_loader=None):
         """Train the HQDE ensemble."""
+        del validation_loader
         start_time = time.time()
+        initial_memory = (
+            psutil.Process().memory_info().rss / 1024 / 1024
+            if PSUTIL_AVAILABLE and psutil is not None
+            else 0
+        )
 
-        # Monitor initial memory usage
-        initial_memory = psutil.Process().memory_info().rss / 1024 / 1024 if PSUTIL_AVAILABLE else 0  # MB
+        self.logger.info("Starting HQDE training for %s epochs", num_epochs)
+        epoch_history = self.ensemble_manager.train_ensemble(data_loader, num_epochs)
 
-        self.logger.info(f"Starting HQDE training for {num_epochs} epochs")
-
-        # Train the ensemble
-        self.ensemble_manager.train_ensemble(data_loader, num_epochs)
-
-        # Calculate metrics
         end_time = time.time()
-        final_memory = psutil.Process().memory_info().rss / 1024 / 1024 if PSUTIL_AVAILABLE else 0  # MB
+        final_memory = (
+            psutil.Process().memory_info().rss / 1024 / 1024
+            if PSUTIL_AVAILABLE and psutil is not None
+            else 0
+        )
 
-        self.metrics.update({
-            'training_time': end_time - start_time,
-            'memory_usage': final_memory - initial_memory
-        })
+        self.metrics.update(
+            {
+                "training_time": end_time - start_time,
+                "memory_usage": final_memory - initial_memory,
+                "epoch_history": epoch_history,
+                "compression_ratio": self.ensemble_manager.get_quantization_metrics()["compression_ratio"],
+            }
+        )
+        if epoch_history:
+            self.metrics["final_loss"] = epoch_history[-1]["loss"]
+            self.metrics["final_accuracy"] = epoch_history[-1]["accuracy"]
 
-        self.logger.info(f"HQDE training completed in {self.metrics['training_time']:.2f} seconds")
-        self.logger.info(f"Memory usage: {self.metrics['memory_usage']:.2f} MB")
-
-        return self.metrics
+        self.logger.info("HQDE training completed in %.2f seconds", self.metrics["training_time"])
+        self.logger.info("Memory usage delta: %.2f MB", self.metrics["memory_usage"])
+        return self.metrics.copy()
 
     def predict(self, data_loader):
         """Make predictions using the trained ensemble."""
-        predictions = []
-
         if not self.ensemble_manager.workers:
-            logger.warning("No workers available for prediction")
+            self.logger.warning("No workers available for prediction")
             return torch.empty(0)
 
+        predictions = []
+        aggregation_mode = str(self.training_config.get("prediction_aggregation", "efficiency_weighted")).lower()
+
         try:
-            # Aggregate predictions from all workers for better accuracy
+            efficiency_scores = self.ensemble_manager.get_efficiency_scores()
             for batch in data_loader:
-                if isinstance(batch, (list, tuple)) and len(batch) > 0:
-                    data = batch[0]  # Handle (data, targets) tuples
+                data = batch[0] if isinstance(batch, (list, tuple)) else batch
+                prediction_calls = [
+                    self.ensemble_manager._worker_call(worker, "predict", data)
+                    for worker in self.ensemble_manager.workers
+                ]
+                worker_predictions = self.ensemble_manager._resolve(prediction_calls)
+                if not worker_predictions:
+                    continue
+
+                if aggregation_mode == "mean":
+                    ensemble_prediction = torch.stack(worker_predictions, dim=0).mean(dim=0)
                 else:
-                    data = batch
-
-                # Get predictions from all workers
-                worker_predictions = []
-                for worker in self.ensemble_manager.workers:
-                    batch_prediction = ray.get(worker.predict.remote(data))
-                    worker_predictions.append(batch_prediction)
-
-                # Average predictions from all workers (ensemble voting)
-                if worker_predictions:
-                    ensemble_prediction = torch.stack(worker_predictions).mean(dim=0)
-                    predictions.append(ensemble_prediction)
-
-        except Exception as e:
-            logger.error(f"Prediction failed: {e}")
-            # Fallback to simple predictions
-            for batch in data_loader:
-                if isinstance(batch, (list, tuple)) and len(batch) > 0:
-                    batch_size = batch[0].size(0)
-                else:
-                    batch_size = batch.size(0)
-
-                # Simple fallback prediction
-                batch_predictions = torch.randn(batch_size, 10)
-                predictions.append(batch_predictions)
+                    ensemble_prediction = self.aggregator.efficiency_weighted_aggregation(
+                        worker_predictions,
+                        efficiency_scores,
+                    )
+                predictions.append(ensemble_prediction.cpu())
+        except Exception as exc:
+            self.logger.error("Prediction failed: %s", exc)
+            raise RuntimeError("HQDE prediction failed") from exc
 
         return torch.cat(predictions, dim=0) if predictions else torch.empty(0)
 
-    def get_performance_metrics(self) -> Dict[str, float]:
+    def get_performance_metrics(self) -> Dict[str, Any]:
         """Get performance metrics from the HQDE system."""
         return self.metrics.copy()
 
     def save_model(self, filepath: str):
-        """Save the trained ensemble model."""
-        # Get aggregated weights
-        aggregated_weights = self.ensemble_manager.aggregate_weights()
-
+        """Save the full ensemble checkpoint."""
         model_state = {
-            'aggregated_weights': aggregated_weights,
-            'model_kwargs': self.model_kwargs,
-            'metrics': self.metrics,
-            'num_workers': self.num_workers
+            "worker_checkpoints": self.ensemble_manager.get_worker_checkpoints(),
+            "model_kwargs": self.model_kwargs,
+            "metrics": self.metrics,
+            "num_workers": self.num_workers,
+            "training_config": self.training_config,
+            "quantization_config": self.quantization_config,
         }
-
         torch.save(model_state, filepath)
-        self.logger.info(f"HQDE model saved to {filepath}")
+        self.logger.info("HQDE model saved to %s", filepath)
 
     def load_model(self, filepath: str):
-        """Load a trained ensemble model."""
-        model_state = torch.load(filepath)
+        """Load a saved ensemble checkpoint."""
+        model_state = torch.load(filepath, map_location="cpu")
+        self.model_kwargs = dict(model_state["model_kwargs"])
+        self.metrics = dict(model_state["metrics"])
+        self.num_workers = int(model_state["num_workers"])
+        self.training_config = validate_training_config(model_state.get("training_config", {}))
+        self.quantization_config = model_state.get("quantization_config")
 
-        self.model_kwargs = model_state['model_kwargs']
-        self.metrics = model_state['metrics']
-        self.num_workers = model_state['num_workers']
-
-        # Reinitialize ensemble with loaded state
+        self.cleanup()
+        self.ensemble_manager = DistributedEnsembleManager(
+            num_workers=self.num_workers,
+            training_config=self.training_config,
+            quantization_config=self.quantization_config,
+        )
         self.initialize_ensemble()
+        self.quantizer = self.ensemble_manager.quantizer
 
-        # Set weights if available
-        if 'aggregated_weights' in model_state:
-            self.ensemble_manager.broadcast_weights(model_state['aggregated_weights'])
+        if "worker_checkpoints" in model_state:
+            self.ensemble_manager.load_worker_checkpoints(model_state["worker_checkpoints"])
+        elif "aggregated_weights" in model_state:
+            self.ensemble_manager.broadcast_weights(model_state["aggregated_weights"])
 
-        self.logger.info(f"HQDE model loaded from {filepath}")
+        self.logger.info("HQDE model loaded from %s", filepath)
 
     def cleanup(self):
         """Cleanup resources."""
-        self.ensemble_manager.shutdown()
+        if hasattr(self, "ensemble_manager") and self.ensemble_manager is not None:
+            self.ensemble_manager.shutdown()
 
 # Factory function for easy instantiation
 def create_hqde_system(model_class,
