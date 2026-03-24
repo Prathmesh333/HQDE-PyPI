@@ -7,10 +7,10 @@ training loop, prediction aggregation, and checkpoint handling.
 
 from __future__ import annotations
 
-from contextlib import nullcontext
 import inspect
 import logging
 import time
+from contextlib import nullcontext
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -53,13 +53,23 @@ DEFAULT_TRAINING_CONFIG: Dict[str, Any] = {
     "compile_mode": "default",
     "ensemble_mode": "independent",
     "batch_assignment": "replicate",
+    "training_aggregation": "sample_weighted",
     "prediction_aggregation": "efficiency_weighted",
+    "server_optimizer": "fedadam",
+    "server_learning_rate": 1.0,
+    "server_beta1": 0.9,
+    "server_beta2": 0.99,
+    "server_epsilon": 1e-3,
+    "federated_normalization": "local_bn",
 }
 
 VALID_OPTIMIZERS = {"sgd", "adam", "adamw"}
 VALID_ENSEMBLE_MODES = {"independent", "fedavg"}
 VALID_BATCH_ASSIGNMENTS = {"replicate", "split"}
+VALID_TRAINING_AGGREGATIONS = {"sample_weighted", "mean", "efficiency_weighted"}
 VALID_PREDICTION_AGGREGATIONS = {"efficiency_weighted", "mean"}
+VALID_SERVER_OPTIMIZERS = {"mean", "fedadam"}
+VALID_FEDERATED_NORMALIZATIONS = {"shared", "local_bn"}
 VALID_COMPILE_MODES = {"default", "reduce-overhead", "max-autotune"}
 
 
@@ -97,7 +107,14 @@ def validate_training_config(training_config: Optional[Dict[str, Any]]) -> Dict[
         compile_mode: one of {"default", "reduce-overhead", "max-autotune"}.
         ensemble_mode: "independent" for diverse ensembles or "fedavg" for epoch-wise averaging.
         batch_assignment: "replicate" for true ensemble training or "split" for local-SGD style batches.
+        training_aggregation: "sample_weighted", "mean", or "efficiency_weighted".
         prediction_aggregation: "efficiency_weighted" or "mean".
+        server_optimizer: "mean" or "fedadam" for federated server-side updates.
+        server_learning_rate: positive float server update scale.
+        server_beta1: float in [0, 1) first-moment coefficient for FedAdam.
+        server_beta2: float in [0, 1) second-moment coefficient for FedAdam.
+        server_epsilon: positive float numerical stabilizer for FedAdam.
+        federated_normalization: "shared" or "local_bn" to preserve per-worker batch norm.
     """
     config = dict(DEFAULT_TRAINING_CONFIG)
     config.update(training_config or {})
@@ -105,7 +122,10 @@ def validate_training_config(training_config: Optional[Dict[str, Any]]) -> Dict[
     config["optimizer"] = str(config["optimizer"]).lower()
     config["ensemble_mode"] = str(config["ensemble_mode"]).lower()
     config["batch_assignment"] = str(config["batch_assignment"]).lower()
+    config["training_aggregation"] = str(config["training_aggregation"]).lower()
     config["prediction_aggregation"] = str(config["prediction_aggregation"]).lower()
+    config["server_optimizer"] = str(config["server_optimizer"]).lower()
+    config["federated_normalization"] = str(config["federated_normalization"]).lower()
 
     if config["optimizer"] not in VALID_OPTIMIZERS:
         raise ValueError(
@@ -120,10 +140,25 @@ def validate_training_config(training_config: Optional[Dict[str, Any]]) -> Dict[
             "Unsupported batch_assignment "
             f"'{config['batch_assignment']}'. Expected one of {sorted(VALID_BATCH_ASSIGNMENTS)}."
         )
+    if config["training_aggregation"] not in VALID_TRAINING_AGGREGATIONS:
+        raise ValueError(
+            "Unsupported training_aggregation "
+            f"'{config['training_aggregation']}'. Expected one of {sorted(VALID_TRAINING_AGGREGATIONS)}."
+        )
     if config["prediction_aggregation"] not in VALID_PREDICTION_AGGREGATIONS:
         raise ValueError(
             "Unsupported prediction_aggregation "
             f"'{config['prediction_aggregation']}'. Expected one of {sorted(VALID_PREDICTION_AGGREGATIONS)}."
+        )
+    if config["server_optimizer"] not in VALID_SERVER_OPTIMIZERS:
+        raise ValueError(
+            "Unsupported server_optimizer "
+            f"'{config['server_optimizer']}'. Expected one of {sorted(VALID_SERVER_OPTIMIZERS)}."
+        )
+    if config["federated_normalization"] not in VALID_FEDERATED_NORMALIZATIONS:
+        raise ValueError(
+            "Unsupported federated_normalization "
+            f"'{config['federated_normalization']}'. Expected one of {sorted(VALID_FEDERATED_NORMALIZATIONS)}."
         )
     config["compile_mode"] = str(config["compile_mode"]).lower()
     if config["compile_mode"] not in VALID_COMPILE_MODES:
@@ -137,6 +172,8 @@ def validate_training_config(training_config: Optional[Dict[str, Any]]) -> Dict[
         "min_learning_rate": (0.0, True),
         "gradient_clip_norm": (0.0, True),
         "warmup_start_factor": (0.0, False),
+        "server_learning_rate": (0.0, False),
+        "server_epsilon": (0.0, False),
     }
     for key, (minimum, inclusive) in numeric_constraints.items():
         value = float(config[key])
@@ -150,6 +187,12 @@ def validate_training_config(training_config: Optional[Dict[str, Any]]) -> Dict[
     config["label_smoothing"] = float(config["label_smoothing"])
     if not 0.0 <= config["label_smoothing"] < 1.0:
         raise ValueError(f"label_smoothing must be in [0.0, 1.0), got {config['label_smoothing']}.")
+    config["server_beta1"] = float(config["server_beta1"])
+    config["server_beta2"] = float(config["server_beta2"])
+    if not 0.0 <= config["server_beta1"] < 1.0:
+        raise ValueError(f"server_beta1 must be in [0.0, 1.0), got {config['server_beta1']}.")
+    if not 0.0 <= config["server_beta2"] < 1.0:
+        raise ValueError(f"server_beta2 must be in [0.0, 1.0), got {config['server_beta2']}.")
 
     config["warmup_epochs"] = int(config["warmup_epochs"])
     if config["warmup_epochs"] < 0:
@@ -164,75 +207,200 @@ def validate_training_config(training_config: Optional[Dict[str, Any]]) -> Dict[
     return config
 
 class AdaptiveQuantizer:
-    """Adaptive weight quantization based on real-time importance scoring."""
+    """Adaptive delta quantizer for communication-efficient FedAvg."""
 
-    def __init__(self, base_bits: int = 8, min_bits: int = 4, max_bits: int = 16):
-        self.base_bits = base_bits
-        self.min_bits = min_bits
-        self.max_bits = max_bits
-        self.compression_cache = {}
+    def __init__(
+        self,
+        base_bits: int = 12,
+        min_bits: int = 8,
+        max_bits: int = 16,
+        block_size: int = 1024,
+        warmup_rounds: int = 5,
+        min_tensor_elements: int = 2048,
+        skip_bias: bool = True,
+        skip_norm: bool = True,
+        error_feedback: bool = True,
+    ):
+        self.base_bits = int(base_bits)
+        self.min_bits = int(min_bits)
+        self.max_bits = int(max_bits)
+        self.block_size = max(int(block_size), 1)
+        self.warmup_rounds = max(int(warmup_rounds), 0)
+        self.min_tensor_elements = max(int(min_tensor_elements), 1)
+        self.skip_bias = bool(skip_bias)
+        self.skip_norm = bool(skip_norm)
+        self.error_feedback = bool(error_feedback)
+        if not (self.min_bits <= self.base_bits <= self.max_bits):
+            raise ValueError(
+                "Quantization bits must satisfy min_bits <= base_bits <= max_bits. "
+                f"Got min_bits={self.min_bits}, base_bits={self.base_bits}, max_bits={self.max_bits}."
+            )
+        self.residual_buffers: Dict[str, torch.Tensor] = {}
 
-    def compute_importance_score(self, weights: torch.Tensor, gradients: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """Compute importance scores based on gradient magnitude and weight variance."""
+    def _buffer_key(self, worker_id: int, param_name: str) -> str:
+        return f"{int(worker_id)}::{param_name}"
+
+    def reset_state(self):
+        """Reset accumulated quantization residuals."""
+        self.residual_buffers = {}
+
+    def get_state(self) -> Dict[str, Any]:
+        """Return serializable quantizer state."""
+        return {
+            "residual_buffers": {
+                key: tensor.detach().cpu().clone()
+                for key, tensor in self.residual_buffers.items()
+            }
+        }
+
+    def load_state(self, state: Optional[Dict[str, Any]]):
+        """Restore quantizer state from a checkpoint payload."""
+        state = state or {}
+        self.residual_buffers = {
+            str(key): tensor.detach().cpu().clone()
+            for key, tensor in state.get("residual_buffers", {}).items()
+        }
+
+    def compute_importance_score(
+        self,
+        weights: torch.Tensor,
+        gradients: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Compute normalized importance scores for a tensor."""
         with torch.no_grad():
-            # Weight-based importance
             weight_importance = torch.abs(weights)
-
-            # Gradient-based importance if available
             if gradients is not None:
                 grad_importance = torch.abs(gradients)
                 combined_importance = 0.7 * weight_importance + 0.3 * grad_importance
             else:
                 combined_importance = weight_importance
 
-            # Normalize to [0, 1]
-            if combined_importance.numel() > 0:
-                min_val = combined_importance.min()
-                max_val = combined_importance.max()
-                if max_val > min_val:
-                    importance = (combined_importance - min_val) / (max_val - min_val)
-                else:
-                    importance = torch.ones_like(combined_importance) * 0.5
+            if combined_importance.numel() == 0:
+                return torch.zeros_like(combined_importance)
+
+            min_val = combined_importance.min()
+            max_val = combined_importance.max()
+            if max_val > min_val:
+                return (combined_importance - min_val) / (max_val - min_val)
+            return torch.ones_like(combined_importance) * 0.5
+
+    def _scheduled_bits(self, round_index: int, total_rounds: int) -> int:
+        """Return the round-level target bitwidth."""
+        if round_index <= self.warmup_rounds:
+            return 32
+
+        quant_rounds = max(int(total_rounds) - self.warmup_rounds, 1)
+        progress = min(max((round_index - self.warmup_rounds - 1) / quant_rounds, 0.0), 1.0)
+        if progress < 0.33:
+            return self.max_bits
+        if progress < 0.66:
+            return self.base_bits
+        return self.min_bits
+
+    def should_quantize_parameter(
+        self,
+        param_name: str,
+        tensor: torch.Tensor,
+        round_index: int,
+    ) -> bool:
+        """Return whether a tensor should be quantized on the current round."""
+        if round_index <= self.warmup_rounds:
+            return False
+        if not torch.is_floating_point(tensor):
+            return False
+        if tensor.numel() < self.min_tensor_elements:
+            return False
+
+        lowered_name = str(param_name).lower()
+        if "num_batches_tracked" in lowered_name:
+            return False
+        if "running_mean" in lowered_name or "running_var" in lowered_name:
+            return False
+        if self.skip_bias and lowered_name.endswith(".bias"):
+            return False
+        if self.skip_norm and any(token in lowered_name for token in ("norm", "bn", "ln", "gn")):
+            return False
+        return True
+
+    def quantize_delta(
+        self,
+        param_name: str,
+        delta: torch.Tensor,
+        worker_id: int,
+        round_index: int,
+        total_rounds: int,
+    ) -> Tuple[torch.Tensor, Dict[str, Any]]:
+        """Quantize a model delta using blockwise symmetric quantization."""
+        delta_tensor = delta.detach().cpu().float()
+        original_bytes = float(delta_tensor.numel() * delta_tensor.element_size())
+
+        if not self.should_quantize_parameter(param_name, delta_tensor, round_index):
+            return delta_tensor.clone(), {
+                "avg_bits": 32.0,
+                "compression_ratio": 1.0,
+                "original_bytes": original_bytes,
+                "transmitted_bytes": original_bytes,
+                "quantized": False,
+            }
+
+        buffer_key = self._buffer_key(worker_id, param_name)
+        residual = self.residual_buffers.get(buffer_key)
+        if residual is None or residual.shape != delta_tensor.shape:
+            residual = torch.zeros_like(delta_tensor)
+        work_tensor = delta_tensor + residual if self.error_feedback else delta_tensor
+        importance = self.compute_importance_score(work_tensor)
+
+        flat_tensor = work_tensor.reshape(-1)
+        flat_importance = importance.reshape(-1)
+        dequantized_flat = torch.empty_like(flat_tensor)
+        round_bits = self._scheduled_bits(round_index, total_rounds)
+
+        total_bits = 0.0
+        total_scale_bytes = 0.0
+        block_bitwidths: List[int] = []
+
+        for start_index in range(0, flat_tensor.numel(), self.block_size):
+            end_index = min(start_index + self.block_size, flat_tensor.numel())
+            block = flat_tensor[start_index:end_index]
+            block_importance = flat_importance[start_index:end_index]
+            if block.numel() == 0:
+                continue
+
+            mean_importance = float(block_importance.mean().item()) if block_importance.numel() > 0 else 0.5
+            low_bits = max(self.min_bits, round_bits - 2)
+            high_bits = min(self.max_bits, round_bits + 2)
+            block_bits = int(round(low_bits + (high_bits - low_bits) * mean_importance))
+            block_bits = max(self.min_bits, min(self.max_bits, block_bits))
+            block_bitwidths.append(block_bits)
+
+            max_abs = block.abs().max()
+            if max_abs > 0:
+                qmax = max(2 ** (block_bits - 1) - 1, 1)
+                scale = max_abs / qmax
+                quantized = torch.round(block / scale).clamp(-qmax, qmax)
+                dequantized = quantized * scale
             else:
-                importance = torch.ones_like(combined_importance) * 0.5
+                dequantized = block.clone()
 
-        return importance
+            dequantized_flat[start_index:end_index] = dequantized
+            total_bits += float(block.numel() * block_bits)
+            total_scale_bytes += 4.0
 
-    def adaptive_quantize(self, weights: torch.Tensor, importance_score: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, Any]]:
-        """Perform adaptive quantization based on importance scores."""
-        # Determine bits per parameter based on importance
-        bits_per_param = self.min_bits + (self.max_bits - self.min_bits) * importance_score
-        bits_per_param = torch.clamp(bits_per_param, self.min_bits, self.max_bits).int()
+        dequantized_tensor = dequantized_flat.view_as(delta_tensor)
+        if self.error_feedback:
+            self.residual_buffers[buffer_key] = (work_tensor - dequantized_tensor).detach().cpu()
 
-        # For simplicity, use uniform quantization with average bits
-        avg_bits = int(bits_per_param.float().mean().item())
-
-        # Quantize weights
-        weight_min = weights.min()
-        weight_max = weights.max()
-
-        if weight_max > weight_min:
-            scale = (weight_max - weight_min) / (2**avg_bits - 1)
-            zero_point = weight_min
-
-            quantized = torch.round((weights - zero_point) / scale)
-            quantized = torch.clamp(quantized, 0, 2**avg_bits - 1)
-
-            # Dequantize for use
-            dequantized = quantized * scale + zero_point
-        else:
-            dequantized = weights.clone()
-            scale = torch.tensor(1.0)
-            zero_point = torch.tensor(0.0)
-
-        metadata = {
-            'scale': scale,
-            'zero_point': zero_point,
-            'avg_bits': avg_bits,
-            'compression_ratio': 32.0 / avg_bits  # Assuming original is float32
+        transmitted_bytes = (total_bits / 8.0) + total_scale_bytes
+        avg_bits = total_bits / max(float(delta_tensor.numel()), 1.0)
+        compression_ratio = original_bytes / max(transmitted_bytes, 1.0)
+        return dequantized_tensor, {
+            "avg_bits": avg_bits,
+            "compression_ratio": compression_ratio,
+            "original_bytes": original_bytes,
+            "transmitted_bytes": transmitted_bytes,
+            "quantized": True,
+            "block_bits": block_bitwidths,
         }
-
-        return dequantized, metadata
 
 class QuantumInspiredAggregator:
     """Quantum-inspired ensemble aggregation with controlled noise injection."""
@@ -407,10 +575,8 @@ class _EnsembleWorkerBase:
             predictions = outputs.argmax(dim=1)
             accuracy = (predictions == targets).float().mean().item()
             loss_value = float(loss.item())
-            self.efficiency_score = 0.9 * self.efficiency_score + 0.1 * max(
-                accuracy,
-                1.0 / (1.0 + loss_value),
-            )
+            score_signal = (2.0 * accuracy) + (1.0 / max(1.0 + loss_value, 1e-6))
+            self.efficiency_score = 0.8 * self.efficiency_score + 0.2 * score_signal
 
         return {
             "loss": loss_value,
@@ -425,12 +591,33 @@ class _EnsembleWorkerBase:
             for name, tensor in self.model.state_dict().items()
         }
 
-    def set_weights(self, weights_dict):
+    def get_local_normalization_keys(self, mode: str = "local_bn") -> List[str]:
+        """Return state-dict keys that should remain local in federated mode."""
+        if str(mode).lower() != "local_bn":
+            return []
+
+        state_keys = set(self.model.state_dict().keys())
+        local_keys = []
+        for module_name, module in self.model.named_modules():
+            if not isinstance(module, nn.modules.batchnorm._BatchNorm):
+                continue
+            prefix = f"{module_name}." if module_name else ""
+            for suffix in ("weight", "bias", "running_mean", "running_var", "num_batches_tracked"):
+                key = prefix + suffix
+                if key in state_keys:
+                    local_keys.append(key)
+        return local_keys
+
+    def set_weights(self, weights_dict, preserve_names: Optional[List[str]] = None):
         """Load a state dict into the worker model."""
         current_state = self.model.state_dict()
+        preserve_names = set(preserve_names or [])
         updated_state = {}
         for name, tensor in current_state.items():
-            updated_state[name] = weights_dict.get(name, tensor).to(self.device)
+            if name in preserve_names:
+                updated_state[name] = tensor
+            else:
+                updated_state[name] = weights_dict.get(name, tensor).to(self.device)
         self.model.load_state_dict(updated_state, strict=False)
         return True
 
@@ -498,6 +685,16 @@ class DistributedEnsembleManager:
         )
         self.aggregator = QuantumInspiredAggregator()
         self.last_compression_ratio = 1.0
+        self.last_original_bytes = 0.0
+        self.last_transmitted_bytes = 0.0
+        self.reference_weights: Optional[Dict[str, torch.Tensor]] = None
+        self.current_round = 0
+        self.total_rounds = 0
+        self.round_sample_counts: List[float] = [0.0] * self.num_workers
+        self.local_normalization_keys = set()
+        self.server_step = 0
+        self.server_first_moment: Dict[str, torch.Tensor] = {}
+        self.server_second_moment: Dict[str, torch.Tensor] = {}
         self.use_ray = bool(RAY_AVAILABLE)
         self.logger = logging.getLogger(__name__)
 
@@ -514,6 +711,48 @@ class DistributedEnsembleManager:
         if self.use_ray:
             return ray.get(values)
         return values
+
+    @staticmethod
+    def _clone_state_dict(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        return {
+            name: tensor.detach().cpu().clone()
+            for name, tensor in state_dict.items()
+        }
+
+    def _uses_local_normalization(self) -> bool:
+        return (
+            self.training_config["ensemble_mode"] == "fedavg"
+            and str(self.training_config.get("federated_normalization", "shared")).lower() == "local_bn"
+        )
+
+    def _is_local_normalization_key(self, param_name: str) -> bool:
+        return param_name in self.local_normalization_keys
+
+    @staticmethod
+    def _weighted_average_tensors(tensor_list: List[torch.Tensor], weights: List[float]) -> torch.Tensor:
+        if not tensor_list:
+            raise ValueError("Cannot aggregate an empty tensor list.")
+        reference_device = tensor_list[0].device
+        stacked = torch.stack([tensor.to(reference_device) for tensor in tensor_list], dim=0)
+        weight_tensor = torch.tensor(weights, dtype=torch.float32, device=reference_device)
+        weight_sum = float(weight_tensor.sum().item())
+        if weight_sum <= 0:
+            weight_tensor = torch.ones_like(weight_tensor) / max(float(weight_tensor.numel()), 1.0)
+        else:
+            weight_tensor = weight_tensor / weight_sum
+        reshape_dims = (weight_tensor.shape[0],) + (1,) * (stacked.dim() - 1)
+        return (stacked * weight_tensor.view(reshape_dims)).sum(dim=0)
+
+    def _resolve_training_weights(self, efficiency_scores: List[float]) -> List[float]:
+        aggregation_mode = str(self.training_config.get("training_aggregation", "sample_weighted")).lower()
+        if aggregation_mode == "mean":
+            return [1.0] * len(self.workers)
+        if aggregation_mode == "efficiency_weighted":
+            return list(efficiency_scores or [1.0] * len(self.workers))
+        sample_counts = [float(count) for count in self.round_sample_counts]
+        if len(sample_counts) != len(self.workers) or sum(sample_counts) <= 0:
+            return [1.0] * len(self.workers)
+        return sample_counts
 
     def _build_worker_batches(self, data: torch.Tensor, targets: torch.Tensor):
         batch_assignment = str(self.training_config.get("batch_assignment", "replicate")).lower()
@@ -537,6 +776,10 @@ class DistributedEnsembleManager:
             lr_multipliers.append(1.0)
             dropout_rates.append(0.12)
 
+        if self.training_config["ensemble_mode"] == "fedavg":
+            lr_multipliers = [1.0] * self.num_workers
+            dropout_rates = [0.12] * self.num_workers
+
         self.workers = []
         gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
         gpu_per_worker = (gpu_count / self.num_workers) if gpu_count > 0 else 0
@@ -556,9 +799,35 @@ class DistributedEnsembleManager:
                 worker = _EnsembleWorkerBase(**worker_kwargs)
             self.workers.append(worker)
 
+        if self.training_config["ensemble_mode"] == "fedavg" and self.workers:
+            if self._uses_local_normalization():
+                self.local_normalization_keys = set(
+                    self._resolve(
+                        [
+                            self._worker_call(
+                                self.workers[0],
+                                "get_local_normalization_keys",
+                                self.training_config.get("federated_normalization", "local_bn"),
+                            )
+                        ]
+                    )[0]
+                )
+            else:
+                self.local_normalization_keys = set()
+            initial_weights = self._resolve([self._worker_call(self.workers[0], "get_weights")])[0]
+            self.broadcast_weights(initial_weights, preserve_local_norm=False)
+            if self.quantizer is not None:
+                self.quantizer.reset_state()
+            self.current_round = 0
+            self.round_sample_counts = [0.0] * self.num_workers
+            self.server_step = 0
+            self.server_first_moment = {}
+            self.server_second_moment = {}
+
     def setup_workers_training(self, learning_rate: Optional[float] = None, total_epochs: int = 1):
         """Setup training for all workers."""
         learning_rate = learning_rate or float(self.training_config.get("learning_rate", 1e-3))
+        self.total_rounds = max(int(total_epochs), 1)
         setup_calls = [
             self._worker_call(worker, "setup_training", learning_rate, total_epochs)
             for worker in self.workers
@@ -569,34 +838,105 @@ class DistributedEnsembleManager:
     def aggregate_weights(self) -> Dict[str, torch.Tensor]:
         """Aggregate model states from all workers."""
         all_weights = self._resolve([self._worker_call(worker, "get_weights") for worker in self.workers])
-        efficiency_scores = self.get_efficiency_scores()
         if not all_weights:
             return {}
 
+        efficiency_scores = self.get_efficiency_scores()
+        aggregation_weights = self._resolve_training_weights(efficiency_scores)
+        reference_weights = self.reference_weights or self._clone_state_dict(all_weights[0])
         aggregated_weights = {}
-        compression_ratios = []
+        total_original_bytes = 0.0
+        total_transmitted_bytes = 0.0
+        server_optimizer = str(self.training_config.get("server_optimizer", "mean")).lower()
+        use_fedadam = server_optimizer == "fedadam"
+        if use_fedadam:
+            self.server_step += 1
+
+        server_lr = float(self.training_config.get("server_learning_rate", 1.0))
+        beta1 = float(self.training_config.get("server_beta1", 0.9))
+        beta2 = float(self.training_config.get("server_beta2", 0.99))
+        epsilon = float(self.training_config.get("server_epsilon", 1e-3))
+
         for param_name in all_weights[0].keys():
-            param_tensors = [weights[param_name] for weights in all_weights]
-            if self.quantizer is not None:
-                quantized_tensors = []
-                for tensor in param_tensors:
-                    importance = self.quantizer.compute_importance_score(tensor)
-                    dequantized, metadata = self.quantizer.adaptive_quantize(tensor, importance)
-                    quantized_tensors.append(dequantized)
-                    compression_ratios.append(float(metadata.get("compression_ratio", 1.0)))
-                param_tensors = quantized_tensors
-            aggregated_weights[param_name] = self.aggregator.efficiency_weighted_aggregation(
-                param_tensors,
-                efficiency_scores,
-            )
-        self.last_compression_ratio = (
-            float(np.mean(compression_ratios)) if compression_ratios else 1.0
-        )
+            reference_tensor = reference_weights[param_name].detach().cpu()
+            if not torch.is_floating_point(reference_tensor):
+                aggregated_weights[param_name] = reference_tensor.clone()
+                continue
+            if self._is_local_normalization_key(param_name):
+                aggregated_weights[param_name] = reference_tensor.clone()
+                continue
+
+            delta_tensors = []
+            for worker_id, weights in enumerate(all_weights):
+                local_tensor = weights[param_name].detach().cpu().float()
+                delta_tensor = local_tensor - reference_tensor.float()
+                if self.quantizer is not None:
+                    dequantized_delta, metadata = self.quantizer.quantize_delta(
+                        param_name,
+                        delta_tensor,
+                        worker_id=worker_id,
+                        round_index=self.current_round,
+                        total_rounds=self.total_rounds,
+                    )
+                else:
+                    dequantized_delta = delta_tensor.clone()
+                    original_bytes = float(delta_tensor.numel() * delta_tensor.element_size())
+                    metadata = {
+                        "compression_ratio": 1.0,
+                        "original_bytes": original_bytes,
+                        "transmitted_bytes": original_bytes,
+                    }
+                delta_tensors.append(dequantized_delta)
+                total_original_bytes += float(metadata.get("original_bytes", 0.0))
+                total_transmitted_bytes += float(metadata.get("transmitted_bytes", 0.0))
+
+            aggregation_mode = str(self.training_config.get("training_aggregation", "sample_weighted")).lower()
+            if aggregation_mode == "efficiency_weighted":
+                aggregated_delta = self.aggregator.efficiency_weighted_aggregation(
+                    delta_tensors,
+                    aggregation_weights,
+                ).cpu()
+            else:
+                aggregated_delta = self._weighted_average_tensors(delta_tensors, aggregation_weights).cpu()
+
+            if use_fedadam:
+                first_moment = self.server_first_moment.get(param_name)
+                second_moment = self.server_second_moment.get(param_name)
+                if first_moment is None or first_moment.shape != aggregated_delta.shape:
+                    first_moment = torch.zeros_like(aggregated_delta)
+                if second_moment is None or second_moment.shape != aggregated_delta.shape:
+                    second_moment = torch.zeros_like(aggregated_delta)
+
+                first_moment = beta1 * first_moment + (1.0 - beta1) * aggregated_delta
+                second_moment = beta2 * second_moment + (1.0 - beta2) * aggregated_delta.square()
+                self.server_first_moment[param_name] = first_moment.detach().cpu()
+                self.server_second_moment[param_name] = second_moment.detach().cpu()
+
+                bias_correction1 = 1.0 - (beta1 ** self.server_step)
+                bias_correction2 = 1.0 - (beta2 ** self.server_step)
+                corrected_first = first_moment / max(bias_correction1, 1e-8)
+                corrected_second = second_moment / max(bias_correction2, 1e-8)
+                server_update = server_lr * corrected_first / (corrected_second.sqrt() + epsilon)
+                aggregated_weights[param_name] = (reference_tensor.float() + server_update).to(
+                    dtype=reference_tensor.dtype
+                )
+            else:
+                aggregated_weights[param_name] = (reference_tensor.float() + aggregated_delta).to(
+                    dtype=reference_tensor.dtype
+                )
+
+        self.last_original_bytes = total_original_bytes
+        self.last_transmitted_bytes = total_transmitted_bytes
+        self.last_compression_ratio = total_original_bytes / max(total_transmitted_bytes, 1.0)
         return aggregated_weights
 
-    def broadcast_weights(self, weights: Dict[str, torch.Tensor]):
+    def broadcast_weights(self, weights: Dict[str, torch.Tensor], preserve_local_norm: Optional[bool] = None):
         """Broadcast weights to every worker."""
-        calls = [self._worker_call(worker, "set_weights", weights) for worker in self.workers]
+        if preserve_local_norm is None:
+            preserve_local_norm = self._uses_local_normalization() and bool(self.local_normalization_keys)
+        self.reference_weights = self._clone_state_dict(weights)
+        preserve_names = sorted(self.local_normalization_keys) if preserve_local_norm else None
+        calls = [self._worker_call(worker, "set_weights", weights, preserve_names) for worker in self.workers]
         self._resolve(calls)
 
     def get_efficiency_scores(self) -> List[float]:
@@ -611,7 +951,40 @@ class DistributedEnsembleManager:
 
     def get_quantization_metrics(self) -> Dict[str, float]:
         """Return communication quantization metrics for aggregation-enabled modes."""
-        return {"compression_ratio": float(self.last_compression_ratio)}
+        return {
+            "compression_ratio": float(self.last_compression_ratio),
+            "original_bytes": float(self.last_original_bytes),
+            "transmitted_bytes": float(self.last_transmitted_bytes),
+        }
+
+    def get_quantization_state(self) -> Dict[str, Any]:
+        """Return serializable state for quantized FedAvg training."""
+        return {
+            "current_round": int(self.current_round),
+            "total_rounds": int(self.total_rounds),
+            "round_sample_counts": [float(count) for count in self.round_sample_counts],
+            "local_normalization_keys": sorted(self.local_normalization_keys),
+            "reference_weights": self._clone_state_dict(self.reference_weights or {}),
+            "server_step": int(self.server_step),
+            "server_first_moment": self._clone_state_dict(self.server_first_moment),
+            "server_second_moment": self._clone_state_dict(self.server_second_moment),
+            "quantizer_state": self.quantizer.get_state() if self.quantizer is not None else {},
+        }
+
+    def load_quantization_state(self, state: Optional[Dict[str, Any]]):
+        """Restore quantization state from a checkpoint."""
+        state = state or {}
+        self.current_round = int(state.get("current_round", self.current_round))
+        self.total_rounds = int(state.get("total_rounds", self.total_rounds))
+        self.round_sample_counts = [float(count) for count in state.get("round_sample_counts", self.round_sample_counts)]
+        self.local_normalization_keys = set(state.get("local_normalization_keys", list(self.local_normalization_keys)))
+        reference_weights = state.get("reference_weights", {})
+        self.reference_weights = self._clone_state_dict(reference_weights) if reference_weights else self.reference_weights
+        self.server_step = int(state.get("server_step", self.server_step))
+        self.server_first_moment = self._clone_state_dict(state.get("server_first_moment", {}))
+        self.server_second_moment = self._clone_state_dict(state.get("server_second_moment", {}))
+        if self.quantizer is not None:
+            self.quantizer.load_state(state.get("quantizer_state", {}))
 
     def load_worker_checkpoints(self, checkpoints):
         """Restore workers from per-worker checkpoints."""
@@ -621,6 +994,10 @@ class DistributedEnsembleManager:
         for worker, checkpoint in zip(self.workers, checkpoints):
             calls.append(self._worker_call(worker, "load_checkpoint", checkpoint))
         self._resolve(calls)
+        if self.training_config["ensemble_mode"] == "fedavg" and checkpoints:
+            first_state = checkpoints[0].get("model_state_dict", {})
+            if first_state:
+                self.reference_weights = self._clone_state_dict(first_state)
 
     def train_ensemble(self, data_loader, num_epochs: int = 10):
         """Train the ensemble using distributed or local workers."""
@@ -632,6 +1009,7 @@ class DistributedEnsembleManager:
             epoch_loss_sum = 0.0
             epoch_accuracy_sum = 0.0
             epoch_samples = 0
+            worker_round_samples = [0.0] * self.num_workers
 
             for batch in data_loader:
                 if not isinstance(batch, (list, tuple)) or len(batch) < 2:
@@ -646,15 +1024,18 @@ class DistributedEnsembleManager:
                 ]
                 batch_results = self._resolve(calls)
 
-                for result in batch_results:
+                for worker_index, result in enumerate(batch_results):
                     if not result:
                         continue
                     num_samples = int(result["num_samples"])
+                    worker_round_samples[worker_index] += num_samples
                     epoch_loss_sum += float(result["loss"]) * num_samples
                     epoch_accuracy_sum += float(result["accuracy"]) * num_samples
                     epoch_samples += num_samples
 
             if ensemble_mode == "fedavg":
+                self.current_round = epoch + 1
+                self.round_sample_counts = worker_round_samples
                 aggregated_weights = self.aggregate_weights()
                 if aggregated_weights:
                     self.broadcast_weights(aggregated_weights)
@@ -825,6 +1206,7 @@ class HQDESystem:
             "num_workers": self.num_workers,
             "training_config": self.training_config,
             "quantization_config": self.quantization_config,
+            "quantization_state": self.ensemble_manager.get_quantization_state(),
         }
         torch.save(model_state, filepath)
         self.logger.info("HQDE model saved to %s", filepath)
@@ -851,6 +1233,7 @@ class HQDESystem:
             self.ensemble_manager.load_worker_checkpoints(model_state["worker_checkpoints"])
         elif "aggregated_weights" in model_state:
             self.ensemble_manager.broadcast_weights(model_state["aggregated_weights"])
+        self.ensemble_manager.load_quantization_state(model_state.get("quantization_state"))
 
         self.logger.info("HQDE model loaded from %s", filepath)
 
