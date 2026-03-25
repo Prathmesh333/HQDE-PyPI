@@ -2,6 +2,22 @@
 
 All notable changes to the HQDE project will be documented in this file.
 
+## [0.1.10] - 2026-03-25
+
+### Hotfix Release - Complete v0.1.9 Package
+
+This is a hotfix release to ensure all v0.1.9 features are properly included in the PyPI package.
+
+#### What's Fixed
+- Ensured `SmallImageResNet18` model is included in PyPI distribution
+- Ensured `make_cifar_training_config()` preset is included
+- All v0.1.9 features now available via `pip install hqde`
+
+#### Note
+v0.1.9 was published to PyPI but from an incomplete commit. v0.1.10 contains the complete v0.1.9 feature set. All features listed in v0.1.9 release notes below are now available.
+
+---
+
 ## [0.1.9] - 2026-03-25
 
 ### Major API Enhancements - Notebook-Style CIFAR Backbone
