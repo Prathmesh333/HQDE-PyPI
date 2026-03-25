@@ -5,7 +5,7 @@ import unittest
 import torch
 import torch.nn as nn
 
-from hqde import create_hqde_system
+from hqde import SmallImageResNet18, create_hqde_system, make_cifar_training_config
 from hqde.core.hqde_system import (
     AdaptiveQuantizer,
     DistributedEnsembleManager,
@@ -298,6 +298,54 @@ class LocalModeTests(unittest.TestCase):
         finally:
             system.cleanup()
 
+    def test_train_with_validation_loader_reports_validation_metrics(self):
+        loader = self._build_loader()
+        system = create_hqde_system(
+            TinyModel,
+            {"num_classes": 3},
+            num_workers=2,
+            training_config={
+                "use_amp": False,
+                "batch_assignment": "replicate",
+                "ensemble_mode": "independent",
+                "prediction_aggregation": "mean",
+            },
+        )
+        try:
+            metrics = system.train(loader, num_epochs=1, validation_loader=loader)
+            epoch_metrics = metrics["epoch_history"][0]
+            self.assertIn("val_loss", epoch_metrics)
+            self.assertIn("val_accuracy", epoch_metrics)
+            self.assertIn("final_val_loss", metrics)
+            self.assertIn("final_val_accuracy", metrics)
+
+            eval_metrics = system.evaluate(loader)
+            self.assertIn("loss", eval_metrics)
+            self.assertIn("accuracy", eval_metrics)
+            self.assertEqual(eval_metrics["num_samples"], 12)
+        finally:
+            system.cleanup()
+
+    def test_predict_accepts_single_tensor_batch(self):
+        loader = self._build_loader()
+        system = create_hqde_system(
+            TinyModel,
+            {"num_classes": 3},
+            num_workers=2,
+            training_config={
+                "use_amp": False,
+                "batch_assignment": "replicate",
+                "ensemble_mode": "independent",
+                "prediction_aggregation": "mean",
+            },
+        )
+        try:
+            system.train(loader, num_epochs=1)
+            predictions = system.predict(torch.randn(4, 3, 16, 16))
+            self.assertEqual(tuple(predictions.shape), (4, 3))
+        finally:
+            system.cleanup()
+
     def test_fedavg_mode_reports_quantization_metrics(self):
         loader = self._build_loader()
         system = create_hqde_system(
@@ -334,6 +382,24 @@ class LocalModeTests(unittest.TestCase):
             self.assertTrue(system.ensemble_manager.server_second_moment)
         finally:
             system.cleanup()
+
+    def test_cifar_training_preset_matches_notebook_style_defaults(self):
+        config = make_cifar_training_config()
+        self.assertEqual(config["ensemble_mode"], "independent")
+        self.assertEqual(config["batch_assignment"], "replicate")
+        self.assertEqual(config["optimizer"], "sgd")
+        self.assertEqual(config["learning_rate"], 0.1)
+        self.assertEqual(config["label_smoothing"], 0.1)
+        self.assertEqual(config["prediction_aggregation"], "mean")
+
+        fedavg_config = make_cifar_training_config(ensemble_mode="fedavg")
+        self.assertEqual(fedavg_config["batch_assignment"], "split")
+        self.assertEqual(fedavg_config["training_aggregation"], "sample_weighted")
+
+    def test_small_image_resnet18_forward_shape(self):
+        model = SmallImageResNet18(num_classes=10, dropout_rate=0.1)
+        outputs = model(torch.randn(2, 3, 32, 32))
+        self.assertEqual(tuple(outputs.shape), (2, 10))
 
     def test_use_amp_flag_is_safe_without_cuda(self):
         loader = self._build_loader()

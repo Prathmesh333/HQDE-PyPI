@@ -939,6 +939,76 @@ class DistributedEnsembleManager:
         calls = [self._worker_call(worker, "set_weights", weights, preserve_names) for worker in self.workers]
         self._resolve(calls)
 
+    def predict_batch(
+        self,
+        data_batch: torch.Tensor,
+        aggregation_mode: Optional[str] = None,
+        efficiency_scores: Optional[List[float]] = None,
+    ) -> torch.Tensor:
+        """Aggregate worker predictions for one input batch."""
+        if not self.workers:
+            return torch.empty(0)
+
+        resolved_aggregation = str(
+            aggregation_mode or self.training_config.get("prediction_aggregation", "efficiency_weighted")
+        ).lower()
+        resolved_efficiency_scores = efficiency_scores or self.get_efficiency_scores()
+        prediction_calls = [
+            self._worker_call(worker, "predict", data_batch)
+            for worker in self.workers
+        ]
+        worker_predictions = self._resolve(prediction_calls)
+        if not worker_predictions:
+            return torch.empty(0)
+
+        if resolved_aggregation == "mean":
+            return torch.stack(worker_predictions, dim=0).mean(dim=0)
+        return self.aggregator.efficiency_weighted_aggregation(
+            worker_predictions,
+            resolved_efficiency_scores,
+        )
+
+    def evaluate_ensemble(self, data_loader, criterion: Optional[nn.Module] = None) -> Dict[str, float]:
+        """Evaluate the current ensemble on a labeled loader."""
+        if not self.workers:
+            return {"loss": 0.0, "accuracy": 0.0, "num_samples": 0}
+
+        loss_fn = criterion or nn.CrossEntropyLoss()
+        aggregation_mode = str(self.training_config.get("prediction_aggregation", "efficiency_weighted")).lower()
+        efficiency_scores = self.get_efficiency_scores()
+        total_loss = 0.0
+        total_correct = 0
+        total_samples = 0
+
+        with torch.no_grad():
+            for batch in data_loader:
+                if not isinstance(batch, (list, tuple)) or len(batch) < 2:
+                    raise ValueError("Evaluation batches must contain at least (data, targets)")
+
+                data, targets = batch[0], batch[1]
+                predictions = self.predict_batch(
+                    data,
+                    aggregation_mode=aggregation_mode,
+                    efficiency_scores=efficiency_scores,
+                )
+                if predictions.numel() == 0:
+                    continue
+
+                targets_cpu = targets.detach().cpu()
+                loss = loss_fn(predictions, targets_cpu)
+                batch_size = int(targets_cpu.size(0))
+                total_samples += batch_size
+                total_loss += float(loss.item()) * batch_size
+                total_correct += int((predictions.argmax(dim=1) == targets_cpu).sum().item())
+
+        avg_loss = total_loss / total_samples if total_samples else 0.0
+        avg_accuracy = total_correct / total_samples if total_samples else 0.0
+        return {
+            "loss": float(avg_loss),
+            "accuracy": float(avg_accuracy),
+            "num_samples": int(total_samples),
+        }
+
     def get_efficiency_scores(self) -> List[float]:
         """Collect efficiency scores for all workers."""
         if not self.workers:
@@ -999,7 +1069,7 @@ class DistributedEnsembleManager:
             if first_state:
                 self.reference_weights = self._clone_state_dict(first_state)
 
-    def train_ensemble(self, data_loader, num_epochs: int = 10):
+    def train_ensemble(self, data_loader, num_epochs: int = 10, validation_loader=None):
         """Train the ensemble using distributed or local workers."""
         self.setup_workers_training(total_epochs=num_epochs)
         epoch_history = []
@@ -1053,15 +1123,31 @@ class DistributedEnsembleManager:
                 "accuracy": avg_accuracy,
                 "learning_rate": avg_lr,
             }
+            if validation_loader is not None:
+                validation_metrics = self.evaluate_ensemble(validation_loader)
+                epoch_metrics["val_loss"] = validation_metrics["loss"]
+                epoch_metrics["val_accuracy"] = validation_metrics["accuracy"]
             epoch_history.append(epoch_metrics)
-            self.logger.info(
-                "Epoch %s/%s - loss: %.4f - accuracy: %.4f - lr: %.6f",
-                epoch + 1,
-                num_epochs,
-                avg_loss,
-                avg_accuracy,
-                avg_lr,
-            )
+            if validation_loader is not None:
+                self.logger.info(
+                    "Epoch %s/%s - loss: %.4f - accuracy: %.4f - val_loss: %.4f - val_accuracy: %.4f - lr: %.6f",
+                    epoch + 1,
+                    num_epochs,
+                    avg_loss,
+                    avg_accuracy,
+                    epoch_metrics["val_loss"],
+                    epoch_metrics["val_accuracy"],
+                    avg_lr,
+                )
+            else:
+                self.logger.info(
+                    "Epoch %s/%s - loss: %.4f - accuracy: %.4f - lr: %.6f",
+                    epoch + 1,
+                    num_epochs,
+                    avg_loss,
+                    avg_accuracy,
+                    avg_lr,
+                )
 
         return epoch_history
 
@@ -1124,7 +1210,6 @@ class HQDESystem:
 
     def train(self, data_loader, num_epochs: int = 10, validation_loader=None):
         """Train the HQDE ensemble."""
-        del validation_loader
         start_time = time.time()
         initial_memory = (
             psutil.Process().memory_info().rss / 1024 / 1024
@@ -1133,7 +1218,11 @@ class HQDESystem:
         )
 
         self.logger.info("Starting HQDE training for %s epochs", num_epochs)
-        epoch_history = self.ensemble_manager.train_ensemble(data_loader, num_epochs)
+        epoch_history = self.ensemble_manager.train_ensemble(
+            data_loader,
+            num_epochs,
+            validation_loader=validation_loader,
+        )
 
         end_time = time.time()
         final_memory = (
@@ -1153,10 +1242,25 @@ class HQDESystem:
         if epoch_history:
             self.metrics["final_loss"] = epoch_history[-1]["loss"]
             self.metrics["final_accuracy"] = epoch_history[-1]["accuracy"]
+            if "val_loss" in epoch_history[-1]:
+                self.metrics["final_val_loss"] = epoch_history[-1]["val_loss"]
+            if "val_accuracy" in epoch_history[-1]:
+                self.metrics["final_val_accuracy"] = epoch_history[-1]["val_accuracy"]
 
         self.logger.info("HQDE training completed in %.2f seconds", self.metrics["training_time"])
         self.logger.info("Memory usage delta: %.2f MB", self.metrics["memory_usage"])
         return self.metrics.copy()
+
+    def evaluate(self, data_loader, criterion: Optional[nn.Module] = None) -> Dict[str, float]:
+        """Evaluate the current ensemble on a labeled dataloader."""
+        if not self.ensemble_manager.workers:
+            self.logger.warning("No workers available for evaluation")
+            return {"loss": 0.0, "accuracy": 0.0, "num_samples": 0}
+
+        metrics = self.ensemble_manager.evaluate_ensemble(data_loader, criterion=criterion)
+        self.metrics["evaluation_loss"] = metrics["loss"]
+        self.metrics["evaluation_accuracy"] = metrics["accuracy"]
+        return metrics
 
     def predict(self, data_loader):
         """Make predictions using the trained ensemble."""
@@ -1169,23 +1273,20 @@ class HQDESystem:
 
         try:
             efficiency_scores = self.ensemble_manager.get_efficiency_scores()
-            for batch in data_loader:
-                data = batch[0] if isinstance(batch, (list, tuple)) else batch
-                prediction_calls = [
-                    self.ensemble_manager._worker_call(worker, "predict", data)
-                    for worker in self.ensemble_manager.workers
-                ]
-                worker_predictions = self.ensemble_manager._resolve(prediction_calls)
-                if not worker_predictions:
-                    continue
+            if torch.is_tensor(data_loader):
+                iterable = [data_loader]
+            else:
+                iterable = data_loader
 
-                if aggregation_mode == "mean":
-                    ensemble_prediction = torch.stack(worker_predictions, dim=0).mean(dim=0)
-                else:
-                    ensemble_prediction = self.aggregator.efficiency_weighted_aggregation(
-                        worker_predictions,
-                        efficiency_scores,
-                    )
+            for batch in iterable:
+                data = batch[0] if isinstance(batch, (list, tuple)) else batch
+                ensemble_prediction = self.ensemble_manager.predict_batch(
+                    data,
+                    aggregation_mode=aggregation_mode,
+                    efficiency_scores=efficiency_scores,
+                )
+                if ensemble_prediction.numel() == 0:
+                    continue
                 predictions.append(ensemble_prediction.cpu())
         except Exception as exc:
             self.logger.error("Prediction failed: %s", exc)

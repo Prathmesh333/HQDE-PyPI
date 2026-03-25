@@ -9,6 +9,7 @@ from .performance_monitor import PerformanceMonitor, SystemMetrics
 from .data_utils import DataLoader, DataLoaderConfig, DataPreprocessor
 from .visualization import HQDEVisualizer
 from .config_manager import ConfigManager
+from .training_presets import make_cifar_training_config
 
 __all__ = [
     'PerformanceMonitor',
@@ -17,5 +18,6 @@ __all__ = [
     'DataLoaderConfig',
     'DataPreprocessor',
     'HQDEVisualizer',
-    'ConfigManager'
+    'ConfigManager',
+    'make_cifar_training_config',
 ]

@@ -60,49 +60,29 @@ pip install -e .
 ## Quick Start
 
 ```python
-from hqde import create_hqde_system
-import torch.nn as nn
+from hqde import SmallImageResNet18, create_hqde_system, make_cifar_training_config
 
-# Define your PyTorch model
-class MyModel(nn.Module):
-    def __init__(self, num_classes=10, dropout_rate=0.15):  #  v0.1.5: Support dropout_rate
-        super().__init__()
-        self.layers = nn.Sequential(
-            nn.Conv2d(3, 32, 3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-            nn.Conv2d(32, 64, 3, padding=1),
-            nn.ReLU(),
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten(),
-            nn.Dropout(dropout_rate),  #  v0.1.5: Use dropout_rate parameter
-            nn.Linear(64, num_classes)
-        )
-
-    def forward(self, x):
-        return self.layers(x)
-
-# Create HQDE system with 4 distributed workers
-training_config = {
-    'ensemble_mode': 'independent',      # true ensemble training
-    'batch_assignment': 'replicate',     # each worker sees the full batch
-    'optimizer': 'adamw',
-    'use_amp': True,
-    'warmup_epochs': 2,
-}
+training_config = make_cifar_training_config(
+    ensemble_mode='independent',
+    batch_assignment='replicate',
+    prediction_aggregation='mean',
+)
 
 hqde_system = create_hqde_system(
-    model_class=MyModel,
-    model_kwargs={'num_classes': 10},  # dropout_rate will be auto-injected
+    model_class=SmallImageResNet18,
+    model_kwargs={'num_classes': 10},
     num_workers=4,
     training_config=training_config,
 )
 
-# Train the ensemble
-metrics = hqde_system.train(train_loader, num_epochs=40)  #  Use 40 epochs for best results
+# Train the ensemble and collect validation metrics each epoch
+metrics = hqde_system.train(train_loader, num_epochs=20, validation_loader=test_loader)
 
 # Make predictions (ensemble voting)
 predictions = hqde_system.predict(test_loader)
+
+# Evaluate the ensemble directly
+eval_metrics = hqde_system.evaluate(test_loader)
 
 # Cleanup resources
 hqde_system.cleanup()
@@ -151,16 +131,16 @@ training_config = {
 training_config = {
     'ensemble_mode': 'independent',
     'batch_assignment': 'replicate',
-    'optimizer': 'adamw',
-    'learning_rate': 1e-3,
+    'optimizer': 'sgd',
+    'learning_rate': 0.1,
     'weight_decay': 5e-4,
     'use_amp': True,
     'label_smoothing': 0.1,
-    'warmup_epochs': 2,
-    'warmup_start_factor': 0.1,
+    'warmup_epochs': 5,
+    'warmup_start_factor': 0.2,
     'compile_model': False,
     'compile_mode': 'default',
-    'prediction_aggregation': 'efficiency_weighted',
+    'prediction_aggregation': 'mean',
 }
 ```
 

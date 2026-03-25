@@ -15,6 +15,7 @@ from .core.hqde_system import (
     QuantumInspiredAggregator,
     DistributedEnsembleManager
 )
+from .models import SmallImageResNet18
 
 # Quantum-inspired components
 from .quantum import (
@@ -44,6 +45,7 @@ from .utils import (
     DataLoader,
     DataLoaderConfig,
     DataPreprocessor,
+    make_cifar_training_config,
 )
 
 __all__ = [
@@ -53,6 +55,7 @@ __all__ = [
     'AdaptiveQuantizer',
     'QuantumInspiredAggregator',
     'DistributedEnsembleManager',
+    'SmallImageResNet18',
 
     # Quantum
     'QuantumEnsembleAggregator',
@@ -71,4 +74,5 @@ __all__ = [
     'DataLoader',
     'DataLoaderConfig',
     'DataPreprocessor',
+    'make_cifar_training_config',
 ]
