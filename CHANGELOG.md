@@ -2,6 +2,108 @@
 
 All notable changes to the HQDE project will be documented in this file.
 
+## [0.1.9] - 2026-03-25
+
+### Major API Enhancements - Notebook-Style CIFAR Backbone
+
+This release adds production-ready components from the comprehensive benchmark notebook directly into the package, making it easier to achieve high accuracy on CIFAR-10 and similar datasets.
+
+#### New Features
+
+1. **SmallImageResNet18 Model** (`hqde.models.SmallImageResNet18`)
+   - Optimized ResNet18 variant for small images (32×32)
+   - Designed specifically for CIFAR-10/100 and similar datasets
+   - Includes batch normalization and configurable dropout
+   - Exported at top level for easy access
+
+2. **Training Presets** (`hqde.utils.make_cifar_training_config()`)
+   - Pre-configured training settings for CIFAR-10
+   - Includes SGD optimizer with momentum (0.9)
+   - Warmup schedule (5 epochs) + cosine annealing
+   - Label smoothing (0.1) for better generalization
+   - Gradient clipping and AMP support
+   - Target: 88.45% accuracy baseline
+
+3. **Enhanced Core API** (`hqde.core.HQDESystem`)
+   - New `evaluate()` method for clean validation
+   - `train()` now accepts `validation_loader` parameter
+   - Automatic validation tracking (val_loss, val_accuracy per epoch)
+   - Batch-level ensemble prediction in manager
+   - `predict()` accepts single tensor batches
+   - Better metrics reporting in epoch history
+
+4. **Comprehensive Test Suite**
+   - 15 tests covering all major functionality
+   - Config validation tests
+   - Quantizer activation tests (fedavg only)
+   - Batch assignment tests (replicate vs split)
+   - Save/load state preservation tests
+   - AMP safety tests for non-CUDA environments
+
+#### Updated Examples
+
+- **cifar10_test.py**: Rewritten to use SmallImageResNet18 and training preset
+- **hqde_benchmark_v0.1.9.ipynb**: New focused benchmark notebook using v0.1.9 API
+
+#### Technical Improvements
+
+- Conditional quantizer: Only enabled for fedavg mode
+- Compression ratio metrics surfaced in aggregation
+- Modern training controls: warmup, compile, AMP
+- Better documentation of training modes and batch assignment
+
+#### Migration from v0.1.7/v0.1.8
+
+**Old API (still works):**
+```python
+from hqde import create_hqde_system
+
+system = create_hqde_system(
+    model_class=MyModel,
+    num_workers=4,
+    training_config={'num_epochs': 20}
+)
+metrics = system.train(train_loader, num_epochs=20)
+```
+
+**New API (recommended):**
+```python
+from hqde import create_hqde_system, SmallImageResNet18, make_cifar_training_config
+
+config = make_cifar_training_config(num_epochs=20, batch_size=128)
+system = create_hqde_system(
+    model_class=SmallImageResNet18,
+    model_kwargs={'num_classes': 10},
+    num_workers=4,
+    training_config=config
+)
+metrics = system.train(train_loader, num_epochs=20, validation_loader=val_loader)
+test_metrics = system.evaluate(test_loader)
+```
+
+#### Performance Expectations
+
+With SmallImageResNet18 and make_cifar_training_config():
+- **CIFAR-10**: 88.45% accuracy (20 epochs, 4 workers)
+- Improved convergence with warmup + cosine schedule
+- Better generalization with label smoothing
+
+#### Breaking Changes
+None. Fully backward compatible with v0.1.7 and v0.1.8.
+
+#### Installation
+
+```bash
+pip install hqde==0.1.9 --upgrade
+```
+
+Or install from GitHub for latest:
+```bash
+pip install git+https://github.com/Prathmesh333/HQDE-PyPI.git
+```
+
+---
+
 ## [0.1.7] - 2025-02-03
 
 ### CRITICAL FIX: Reverted Broken FedAvg Implementation
