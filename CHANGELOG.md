@@ -2,6 +2,29 @@
 
 All notable changes to the HQDE project will be documented in this file.
 
+## [0.1.11] - 2026-03-25
+
+### Improvements
+
+#### Real-time Training Progress Output
+- Added `print()` statements to display training progress in real-time
+- Shows epoch number, loss, accuracy, and validation metrics as they happen
+- Fixes issue where training appeared frozen in Jupyter/Colab notebooks
+- Logger output still available for production environments
+
+**Example output:**
+```
+Epoch 1/20 - loss: 2.3045 - acc: 0.1234 - val_loss: 2.2891 - val_acc: 0.1456
+Epoch 2/20 - loss: 2.1234 - acc: 0.2345 - val_loss: 2.0987 - val_acc: 0.2567
+```
+
+#### Why This Matters
+- Notebooks (Colab, Jupyter) don't always display logger output
+- Users couldn't see training progress and thought it was stuck
+- Now provides immediate visual feedback during training
+
+---
+
 ## [0.1.10] - 2026-03-25
 
 ### Hotfix Release - Complete v0.1.9 Package
