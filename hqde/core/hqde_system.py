@@ -1076,6 +1076,7 @@ class DistributedEnsembleManager:
         ensemble_mode = str(self.training_config.get("ensemble_mode", "independent")).lower()
 
         for epoch in range(num_epochs):
+            print(f"Epoch {epoch + 1}/{num_epochs}", end=" ", flush=True)
             epoch_loss_sum = 0.0
             epoch_accuracy_sum = 0.0
             epoch_samples = 0
@@ -1129,6 +1130,7 @@ class DistributedEnsembleManager:
                 epoch_metrics["val_accuracy"] = validation_metrics["accuracy"]
             epoch_history.append(epoch_metrics)
             if validation_loader is not None:
+                print(f"- loss: {avg_loss:.4f} - acc: {avg_accuracy:.4f} - val_loss: {epoch_metrics['val_loss']:.4f} - val_acc: {epoch_metrics['val_accuracy']:.4f}")
                 self.logger.info(
                     "Epoch %s/%s - loss: %.4f - accuracy: %.4f - val_loss: %.4f - val_accuracy: %.4f - lr: %.6f",
                     epoch + 1,
@@ -1140,6 +1142,7 @@ class DistributedEnsembleManager:
                     avg_lr,
                 )
             else:
+                print(f"- loss: {avg_loss:.4f} - acc: {avg_accuracy:.4f}")
                 self.logger.info(
                     "Epoch %s/%s - loss: %.4f - accuracy: %.4f - lr: %.6f",
                     epoch + 1,
