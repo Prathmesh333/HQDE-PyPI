@@ -59,40 +59,22 @@ Corresponding author: Prathamesh Nikam
 %% ============================================================
 
 \begin{abstract}
-Training large-scale deep neural networks in distributed environments
-requires balancing three goals: accuracy through model diversity, low
-communication overhead during weight synchronization, and stable
-convergence when data is distributed non-uniformly across workers.
-Existing systems usually handle these goals separately, so a single
-practical framework is still missing.
-
-To address this, we build on Ray, a distributed computing platform
-designed for machine learning workloads. Ray uses a \textbf{stateful
-actor model}, so each worker can keep its neural network in GPU memory
-across epochs instead of reloading it every time. Its object store also
-reduces data movement overhead, which makes it a good fit for iterative
-training with persistent worker state.
-
-We propose \hqde{} (Hierarchical Quantized Distributed Ensemble
-Learning), a framework that trains an ensemble of parallel workers,
-each assigned distinct hyperparameters so that the workers learn
-complementary representations. Worker predictions are combined with an
-\textbf{efficiency-weighted} fusion rule that changes with each worker's
-convergence quality. For bandwidth-limited settings, model weight deltas
-are compressed using \textbf{adaptive blockwise quantization} with
-importance-aware bit allocation and error feedback. A configurable batch
-normalization policy handles non-IID data distributions, and a
-tree-structured aggregation protocol reduces communication complexity
-from $\mathcal{O}(n)$ to $\mathcal{O}(\log n)$.
-
-Experiments on CIFAR-10 and five additional datasets show that \hqde{}
-consistently outperforms centralized training, ensemble baselines, and
-state-of-the-art federated learning algorithms while reducing
-communication volume by up to $12.6\times$. A systematic ablation also
-shows a failure mode in which adaptive server optimizers and globally
-synchronized batch normalization collapse test accuracy to the
-random-chance level despite high training accuracy. We explain the
-cause and provide a validated resolution.
+Distributed ensemble training must balance model diversity, communication
+cost, and stability under heterogeneous data. Existing frameworks often
+handle these goals in isolation. We implement \hqde{}, a distributed
+ensemble system that trains multiple workers in parallel, tracks
+per-worker efficiency, and optionally performs epoch-level federated
+averaging with adaptive delta quantization. The implementation uses Ray
+actors when Ray is available and falls back to local workers otherwise.
+First, workers run local mini-batch updates and update an efficiency
+score based on accuracy and loss. Next, in federated mode, workers send
+weight deltas that are compressed with blockwise symmetric quantization,
+scheduled bitwidths, and error feedback after a warmup period. Then, the
+server aggregates deltas with a weighted mean or a FedAdam-style update
+and broadcasts the new reference weights. Finally, inference uses
+efficiency-weighted softmax or mean fusion of logits. We report CIFAR-10
+example results from the provided scripts and discuss trade-offs across
+aggregation, quantization, and batch-normalization policies.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -123,7 +105,7 @@ deep learning.
 \textbf{Accuracy through diversity.} A single model, no matter how
 large, is constrained by its initialization point and training
 trajectory. Research in ensemble learning~\cite{lakshminarayanan2017}
-consistently demonstrates that combining predictions from multiple
+consistently shows that combining predictions from multiple
 independently trained models improves accuracy and calibration beyond
 what any individual model can achieve. The mechanism is model diversity:
 networks initialized differently and optimized along different
@@ -190,40 +172,25 @@ communication compression beyond native FP16 all-reduce.
 \subsection{Our Proposal}
 
 We present \hqde{} (Hierarchical Quantized Distributed Ensemble
-Learning), a framework that addresses all three requirements jointly.
-\hqde{} is built on the Ray distributed computing
-platform~\cite{moritz2018ray}, whose stateful actor model is
-particularly well-suited to ensemble training: worker processes hold
-models persistently in GPU memory across all training epochs, eliminating
-repeated loading overhead. Workers are initialized with deliberately
-varied hyperparameters and train independently or on disjoint data
-partitions. Their predictions are combined using a dynamic
-efficiency-weighted aggregation scheme. Communication is compressed
-through importance-aware blockwise quantization with error feedback.
+Learning), a framework that aims to address all three requirements jointly.
+The implementation uses Ray actors when Ray is available and falls back
+to local workers otherwise. Each worker keeps its model, optimizer, and
+scheduler state in memory across calls. In independent mode, workers use
+fixed learning-rate multipliers and dropout rates to encourage diversity.
+In federated mode, workers share a reference model and synchronize at
+epoch boundaries. Batches can be replicated or split across workers.
+Predictions are fused with efficiency-weighted softmax or a simple mean.
+In federated mode, weight deltas can be compressed with adaptive
+blockwise quantization and error feedback.
 
 \subsection{Contributions}
 
 The principal contributions of this work are:
 \begin{enumerate}
-  \item A unified distributed ensemble framework integrating federated
-        aggregation, adaptive communication compression, hierarchical
-        tree communication, and efficiency-weighted prediction fusion.
-  \item An efficiency-weighted prediction aggregation mechanism in which
-        each worker's logit contribution is weighted by a dynamic
-        exponential moving average of per-batch convergence quality.
-  \item Adaptive blockwise delta quantization with importance-aware bit
-        allocation, scheduled bitwidth decay, and error feedback
-        achieving $7.9\times$ compression with no accuracy cost.
-  \item Empirical characterization of a critical failure mode in which
-        an adaptive server optimizer combined with globally synchronized
-        batch normalization causes accuracy collapse from $80.82\%$ to
-        $10.00\%$, with mechanistic explanation and validated fix.
-  \item A fast training architecture achieving $2.46\times$ speedup
-        through epoch-level Ray synchronization and GPU-vectorized data
-        augmentation.
-  \item Comprehensive evaluation against 13 baselines across distributed,
-        ensemble, and federated paradigms with accuracy, training time,
-        memory, and communication measurements.
+  \item To the best of our knowledge, a compact open-source implementation that combines independent ensemble training and optional FedAvg-style synchronization in a single PyTorch/Ray pipeline.
+  \item An efficiency score based on per-batch accuracy and loss, used for prediction fusion and optional training aggregation.
+  \item An adaptive blockwise delta quantizer with scheduled bitwidths, parameter filtering, and error feedback for communication reduction in federated mode.
+  \item Configurable server aggregation (weighted mean or FedAdam) and federated normalization that can preserve batch-normalization statistics locally.
 \end{enumerate}
 
 \subsection{Paper Organization}
@@ -245,138 +212,29 @@ limitations. Section~\ref{sec:conc} concludes.
 \section{The Ray Distributed Computing Platform}
 \label{sec:ray}
 
-\hqde{} is built on Ray~\cite{moritz2018ray}, a distributed computing
-framework developed at UC Berkeley's RISE Lab and now maintained as an
-open-source project under the Linux Foundation. Unlike general-purpose
-distributed systems such as Apache Spark~\cite{zaharia2010spark} that
-were designed for batch data processing, Ray was built specifically for
-AI and machine learning workloads that require stateful, long-running
-processes, fine-grained task scheduling, and native GPU support.
-Understanding Ray's core abstractions is necessary to understand the
-design choices in \hqde{}.
+\hqde{} can run with or without Ray. When Ray is available, each
+ensemble member is created as a Ray actor. The actor keeps the model,
+optimizer, scheduler, and efficiency score in memory across calls. The
+coordinator invokes actor methods such as \texttt{train\_step},
+\texttt{get\_weights}, \texttt{set\_weights}, and
+\texttt{predict}, then synchronizes with \texttt{ray.get()}.
+In local mode, the same calls execute on in-process workers.
 
-\subsection{Remote Functions (Tasks)}
+\subsection{Actor-backed workers}
 
-The most basic Ray abstraction is the \textbf{remote function}. Any
-Python function decorated with \texttt{@ray.remote} can be dispatched
-to any node in the cluster asynchronously. The caller receives an
-\textbf{ObjectRef} (a future) immediately and may retrieve the result
-later via \texttt{ray.get()}. Remote functions are stateless: each
-invocation is independent of any previous invocation. This makes them
-well-suited for pure functional computations such as data preprocessing
-or independent evaluation passes, but not for maintaining neural network
-state across training iterations, since the model, optimizer, and
-learning rate scheduler must be reconstructed from scratch on every
-function call.
+Ray actors provide persistent state for iterative training. The
+implementation uses a thin \texttt{RayEnsembleWorker} wrapper around the
+local worker class, so both Ray and local execution share the same code
+path. Data is passed as PyTorch tensors per batch, which keeps the
+training loop simple and consistent across backends.
 
-\subsection{Stateful Actors}
+\subsection{Resource hints}
 
-The central Ray abstraction that \hqde{} exploits is the
-\textbf{actor}. A Ray actor is a Python class decorated with
-\texttt{@ray.remote} that executes as a persistent, long-lived process.
-Unlike remote functions, actors maintain internal state across method
-invocations. In neural network training, this means the following state
-persists for the full duration of training without serialization:
-\begin{itemize}
-  \item Model weights and all intermediate buffers
-  \item Optimizer state (momentum estimates, adaptive learning rates)
-  \item Learning rate scheduler state
-  \item Efficiency tracking variables
-  \item Quantization error feedback buffers
-\end{itemize}
-In traditional batch-dispatching systems, each training step must
-serialize the current model state, transmit it to a worker, load it
-into GPU memory, execute the forward and backward passes, and serialize
-the updated state back to the coordinator. Each such cycle incurs
-500--800~ms of GPU loading overhead and 300--500~ms of Python-JVM
-serialization latency in Spark-based systems. With Ray actors, model
-loading cost is paid \emph{once} at initialization; all subsequent
-training steps operate on the in-memory model without any additional
-loading or serialization.
+Workers are created with Ray's \texttt{num\_gpus} option. The
+implementation divides available GPU capacity evenly across workers, so
+fractional assignments are possible. This allows multiple actors to
+share one device while keeping per-worker state isolated.
 
-\subsection{Zero-Copy Object Store}
-
-Ray maintains a distributed \textbf{object store} backed by shared
-memory (via Apache Plasma). When a Python object is placed into the
-store via \texttt{ray.put()}, all workers on the same node can access
-it through memory-mapped reads without any copying. The object is
-serialized once using Apache Arrow's columnar format; deserialization
-is eliminated for same-node access because the object is presented
-directly as a Python object through shared memory.
-
-\hqde{} uses this mechanism to distribute training data to workers at
-the start of training. Each data partition is placed into the object
-store once; all workers in the ensemble read it via zero-copy access
-throughout all training epochs. In our experiments, this reduces
-per-batch data access latency from the hundreds of milliseconds typical
-of network-based data transfer to approximately 2~ms.
-
-\subsection{Resource Management and GPU Scheduling}
-
-Ray's scheduler supports fractional resource specifications. A worker
-actor can be created with \texttt{num\_gpus=0.25}, allowing four actors
-to share a single GPU without manual memory management or process
-affinity configuration. Ray's placement logic ensures actors are
-scheduled on nodes with sufficient memory and GPU capacity. When a node
-fails, the scheduler can restart the corresponding actors on other nodes
-using checkpoint state.
-
-\subsection{Comparison to Prior Distributed Backends}
-
-Table~\ref{tab:frameworks} summarizes the key differences between
-distributed computing backends relevant to deep learning. Apache Spark's
-stateless model introduces persistent overhead that makes it poorly
-suited to iterative training. PyTorch DDP is efficient for homogeneous
-single-model training but provides no actor model, no zero-copy store,
-and no support for ensemble diversity. Horovod adds ring-allreduce to
-arbitrary frameworks but requires gradient-level synchronization and
-cannot support independent ensemble training. Ray uniquely provides
-stateful actors, zero-copy shared memory, and fine-grained GPU
-scheduling within a single framework, making it the appropriate backend
-for \hqde{}'s ensemble-federated design.
-
-\begin{table}[!t]
-\caption{Comparison of Distributed Backends for Deep Learning.}
-\label{tab:frameworks}
-\centering
-\small
-\renewcommand{\arraystretch}{1.2}
-\setlength{\tabcolsep}{3pt}
-\begin{tabular}{L{1.8cm}C{1.1cm}C{1.1cm}C{1.1cm}C{1.1cm}}
-\toprule
-\textbf{Backend} & \textbf{Stateful} & \textbf{Zero-Copy} & \textbf{GPU Sched.} & \textbf{Ensemble} \\
-\midrule
-Apache Spark  & No  & No  & No  & No  \\
-PyTorch DDP   & No  & No  & Yes & No  \\
-Horovod       & No  & No  & Yes & No  \\
-Param. Server & No  & No  & Yes & No  \\
-\textbf{Ray}  & \textbf{Yes} & \textbf{Yes} & \textbf{Yes} & \textbf{Yes} \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\subsection{Why Epoch-Level Communication Matters}
-
-In a naive Ray-based training loop, the coordinator dispatches
-individual batches to workers via remote calls. For a dataset of 50\,000
-samples at batch size 128, each epoch produces 391 batches; with
-$K=4$ workers, this is $1\,564$ remote calls per epoch. Each call
-incurs Ray scheduling and serialization overhead that, while small per
-call ($\approx$0.1--1~ms), accumulates to several minutes over a full
-training run.
-
-\hqde{}'s redesigned architecture reduces per-epoch calls from
-$1\,564$ to $4$ by having each worker execute a full training epoch
-internally after receiving the data once at initialization. The
-coordinator issues one remote call per worker per epoch to trigger
-training and retrieve the updated weights and efficiency metrics. This
-$391\times$ reduction in Ray overhead is one of the two primary
-contributors to the $2.46\times$ multi-GPU speedup reported in
-Section~\ref{sec:multigpu}.
-
-%% ============================================================
-%%  III. RELATED WORK
-%% ============================================================
 \section{Related Work}
 \label{sec:related}
 
@@ -582,7 +440,7 @@ Each client retains its own batch normalization statistics while sharing
 all other parameters. This modification produces large accuracy gains
 under heterogeneous feature distributions at no additional communication
 cost. \hqde{} implements this as a configurable \texttt{local\_bn}
-policy and demonstrates its interaction with server optimizer choice in
+policy and shows its interaction with server optimizer choice in
 the ablation study.
 
 \subsubsection{FedAdam and Adaptive Server Optimizers}
@@ -606,8 +464,8 @@ formed from a sufficient number of rounds to be reliable. In our
 setting with only 4 workers and 20 rounds, moment estimates are noisy
 and the adaptive scaling amplifies rather than dampens early instability.
 Furthermore, as we show, the interaction between FedAdam and shared
-batch normalization creates a catastrophic failure mode unique to
-federated settings.
+batch normalization can create a severe failure mode in federated
+settings.
 
 \subsubsection{FedNTD}
 
@@ -840,30 +698,32 @@ reduces communication volume.
 
 \subsection{Architectural Overview}
 
-\hqde{} is organized into five functional subsystems as shown in
-Fig.~\ref{fig:arch}. The \textbf{Coordinator} (implemented as a Ray
-driver process) manages the overall training lifecycle: spawning workers,
-distributing data, triggering training rounds, collecting results, and
-broadcasting aggregated weights. The \textbf{Worker Ensemble} consists
-of $K$ Ray actor processes, each holding an independent model,
-optimizer, and efficiency tracker persistently in GPU memory. The
-\textbf{Aggregation Engine} applies hierarchical tree-based weight
-aggregation with optional Byzantine fault tolerance. The
-\textbf{Quantization Module} compresses weight deltas before
-transmission using adaptive blockwise symmetric quantization. The
-\textbf{Prediction Fusion Module} combines worker logits at inference
-time using efficiency-weighted aggregation.
+\hqde{} is organized into four functional subsystems as shown in
+Fig.~\ref{fig:arch}. The \textbf{Coordinator} (the \texttt{HQDESystem}
+and \texttt{DistributedEnsembleManager} classes) manages the training
+lifecycle: it creates workers, runs the training loop, and broadcasts
+updated weights. The \textbf{Worker Ensemble} consists of $K$ Ray actor
+processes when Ray is available, or local worker instances otherwise.
+Each worker holds its own model, optimizer, scheduler, and efficiency
+score in memory. The \textbf{Aggregation and Quantization Module} is
+enabled only in federated mode; it computes weight deltas, optionally
+compresses them with adaptive blockwise quantization, and aggregates them
+with a weighted mean or a FedAdam-style server update. The
+\textbf{Prediction Fusion Module} combines worker logits using
+efficiency-weighted softmax or a simple mean. Optional modules for
+hierarchical aggregation and Byzantine fault tolerance exist in the
+repository but are not wired into the core training loop.
 
 \begin{figure}[!t]
 \centering
 \vspace{4.5cm}
 \caption{High-level architecture of \hqde{}. The Coordinator initializes
-$K$ persistent Ray actor workers. Training data is placed once in the
-Ray zero-copy Object Store. After each epoch, workers transmit
-compressed weight deltas through the Quantization Module to the
-Aggregation Engine, which returns the updated global model. At
-inference, the Prediction Fusion Module combines worker logits using
-efficiency-weighted aggregation.}
+$K$ workers (Ray actors when available) and drives the batch-level
+training loop. In federated mode, workers transmit weight deltas after
+each epoch, optional quantization is applied, and the server aggregates
+and broadcasts updated reference weights. At inference, the Prediction
+Fusion Module combines worker logits using efficiency-weighted or mean
+aggregation.}
 \label{fig:arch}
 \end{figure}
 
@@ -911,15 +771,15 @@ a per-worker dropout is added before the classifier. Parameter count
 the full dataset with distinct hyperparameters: learning rate
 multipliers $\lambda_k \in \{1.0,\,0.85,\,1.15,\,0.95\}$ and dropout
 rates $d_k \in \{0.10,\,0.12,\,0.15,\,0.13\}$. Workers never
-synchronize weights during training; all diversity arises from
-different optimization trajectories. This mode maximizes accuracy.
+synchronize weights during training, so diversity arises from different
+optimization trajectories.
 
-\textbf{Federated Mode.} The training set is partitioned across
-$K$ workers using Dirichlet sampling with concentration parameter
-$\alpha = 0.5$, creating highly skewed non-IID label distributions.
-Workers synchronize model weight deltas after each epoch. Hyperparameter
-diversity is disabled because different learning rates produce weight
-updates on inconsistent scales after aggregation.
+\textbf{Federated Mode.} Workers start from a shared reference model and
+synchronize weight deltas after each epoch. The library expects the
+caller to provide the data partitioning; within each step, batches are
+either replicated or split across workers according to the
+\texttt{batch\_assignment} setting. Hyperparameter diversity is disabled
+in this mode to keep update scales consistent during aggregation.
 
 %% ============================================================
 %%  V. TECHNICAL APPROACH
@@ -942,8 +802,7 @@ The running efficiency score is:
   e_t^{(k)} = 0.8\,e_{t-1}^{(k)} + 0.2\,S_t^{(k)}.
   \label{eq:ema}
 \end{equation}
-The exponential moving average with coefficient 0.8 applies a memory
-window of approximately 5 batches, smoothing over batch-to-batch
+The exponential moving average with coefficient 0.8 smooths batch
 variance while remaining responsive to sustained accuracy changes. At
 inference time:
 \begin{equation}
@@ -952,63 +811,71 @@ inference time:
   \label{eq:pred_agg}
 \end{equation}
 Softmax normalization ensures the weights sum to one and amplifies
-differences between workers' efficiency scores.
+differences between workers' efficiency scores. The same scores can
+optionally weight delta aggregation during training.
 
 \subsection{Adaptive Blockwise Delta Quantization}
 
-\hqde{} transmits weight deltas rather than absolute weights. The delta
-for worker $k$ at round $t$ is:
+\hqde{} transmits weight deltas rather than absolute weights when
+federated mode is enabled. The delta for worker $k$ at round $t$ is:
 \begin{equation}
   \Delta\mathbf{w}_k^{(t)} = \mathbf{w}_k^{(t)} - \mathbf{w}_{\mathrm{ref}}.
   \label{eq:delta}
 \end{equation}
-The flattened delta tensor is partitioned into contiguous blocks of
-$B=1\,024$ elements. For block $i$, the importance score is:
+The flattened delta tensor is split into contiguous blocks of
+$B = 1\,024$ elements. The code computes an elementwise importance score
+from normalized absolute values:
 \begin{equation}
-  \rho_i = \frac{\mathrm{Var}(\Delta\mathbf{w}_i)}
-                {\mathrm{Var}(\Delta\mathbf{w}_i) + \varepsilon}.
+  I = \frac{\lvert\Delta\mathbf{w}\rvert - \min\lvert\Delta\mathbf{w}\rvert}
+           {\max\lvert\Delta\mathbf{w}\rvert - \min\lvert\Delta\mathbf{w}\rvert}.
   \label{eq:importance}
 \end{equation}
-The global bitwidth schedule decays linearly:
+When the denominator is zero, $I$ is set to $0.5$. Each block uses the
+mean importance $\bar{I}_i$ to choose a bitwidth. The round-level target
+bitwidth $b_t$ is scheduled by phase: 32-bit during warmup rounds, then
+$b_{\max}$, $b_{\mathrm{base}}$, and $b_{\min}$ over the early, middle,
+and late thirds of the remaining rounds. For block $i$:
 \begin{equation}
-  b_t = b_{\mathrm{base}} - (b_{\mathrm{base}} - b_{\min})\frac{t}{T},
-  \label{eq:decay}
+  b_i = \mathrm{clamp}\Bigl(\mathrm{round}((b_t - 2) + 4\,\bar{I}_i),
+  b_{\min}, b_{\max}\Bigr).
+  \label{eq:bits}
 \end{equation}
-with $b_{\mathrm{base}}=8$, $b_{\min}=4$. Per-block bitwidth:
-\begin{equation}
-  b_i = \mathrm{clamp}\!\Bigl(\mathrm{round}\bigl(b_t(0.5+\rho_i)\bigr),
-        b_{\min}, b_{\max}\Bigr),
-  \label{eq:bwidth}
-\end{equation}
-with $b_{\max}=16$. Symmetric uniform quantization:
+Symmetric uniform quantization then uses:
 \begin{align}
-  s_i &= \frac{\max|\Delta\mathbf{w}_i|}{2^{b_i-1}-1}, \label{eq:scale}\\[3pt]
-  \Delta\hat{\mathbf{w}}_i &= \mathrm{clamp}\!\Bigl(
-    \mathrm{round}\!\bigl(\tfrac{\Delta\mathbf{w}_i}{s_i}\bigr),
-    -q_{\max}, q_{\max}\Bigr), \label{eq:quant}
+  s_i &= \frac{\max\lvert\Delta\mathbf{w}_i\rvert}{2^{b_i-1}-1},
+  \label{eq:scale}\\[3pt]
+  \Delta\hat{\mathbf{w}}_i &= \mathrm{clamp}\Bigl(
+    \mathrm{round}(\Delta\mathbf{w}_i / s_i),
+    -q_{\max}, q_{\max}\Bigr),
+  \label{eq:quant}
 \end{align}
-where $q_{\max} = 2^{b_i-1}-1$. Error feedback residual:
-\begin{equation}
-  \mathbf{r}_k^{(t)} = \Delta\mathbf{w}_k^{(t)} -
-  s_i \cdot \Delta\hat{\mathbf{w}}_i.
-  \label{eq:feedback}
-\end{equation}
-This residual is added to the next round's delta before quantization,
-ensuring no information is permanently discarded. A 5-round warmup
-period runs without quantization to allow training to stabilize.
+where $q_{\max} = 2^{b_i-1}-1$ and the dequantized block is
+$\Delta\hat{\mathbf{w}}_i \cdot s_i$. If error feedback is enabled,
+the residual is stored per worker and added to the next round's delta.
+The quantizer skips non-floating tensors, small tensors, bias terms, and
+normalization parameters.
 
 \subsection{Server-Side Aggregation}
 
-\textbf{Weighted mean} (default):
+The coordinator aggregates deltas, not full weights. The default update is
+a weighted mean:
 \begin{equation}
-  \mathbf{w}_{\mathrm{global}} = \frac{\sum_{k=1}^K n_k\,\mathbf{w}_k}
-                                      {\sum_{k=1}^K n_k}.
+  \Delta\bar{\mathbf{w}} = \sum_{k=1}^K \alpha_k \Delta\mathbf{w}_k,
+  \quad \sum_{k=1}^K \alpha_k = 1,
   \label{eq:agg}
 \end{equation}
+\begin{equation}
+  \mathbf{w}_{t+1} = \mathbf{w}_{\mathrm{ref}} + \Delta\bar{\mathbf{w}}.
+  \label{eq:agg_update}
+\end{equation}
+The weights $\alpha_k$ come from per-epoch sample counts
+(\texttt{sample\_weighted}), a uniform mean, or efficiency scores
+(\texttt{efficiency\_weighted}).
 
-\textbf{FedAdam}~\cite{reddi2021fedadam}: Maintains server-side moment
-estimates $(m_t, v_t)$ and applies Adam-style adaptive updates per
-Equation~(\ref{eq:fedadam}).
+\textbf{FedAdam}~\cite{reddi2021fedadam} treats $\Delta\bar{\mathbf{w}}$
+as the server update and maintains first and second moments. The code
+applies bias correction and then updates the reference weights using the
+server learning rate in Equation~(\ref{eq:fedadam}).
 
 \subsection{Batch Normalization Policy}
 
@@ -1016,20 +883,21 @@ In \textbf{local BN} mode, batch normalization parameters (running
 mean, running variance, scale, shift) are excluded from the global
 broadcast. Each worker retains locally-calibrated statistics. In
 \textbf{shared BN} mode, all parameters including BN are synchronized.
+This option is only applied in federated mode.
 The critical interaction between this choice and the server optimizer is
 analyzed in Section~\ref{sec:ablation}.
 
 \subsection{Hierarchical Aggregation and Fault Tolerance}
 
-Tree-structured aggregation with branching factor $f$ reduces
-communication complexity from $\mathcal{O}(n)$ to $\mathcal{O}(\log_f
-n)$. At $n=64$, $f=4$: 3 aggregation levels versus 64 messages
-($10.67\times$ reduction). Three outlier detection tests screen each
-worker delta before aggregation: Median Absolute Deviation, cosine
-similarity to the current aggregate, and Euclidean distance from the
-mean. Detected outliers are excluded. The aggregator falls back to
-geometric median~\cite{blanchard2017} under adversarial conditions,
-providing robustness up to $\lfloor (n-1)/2 \rfloor$ Byzantine workers.
+The repository includes optional aggregation utilities that are not wired
+into the \texttt{HQDESystem} training loop. The
+\texttt{HierarchicalAggregator} builds a tree of Ray actors and performs
+weighted-mean aggregation bottom-up. The
+\texttt{ByzantineFaultTolerantAggregator} provides outlier filtering
+(MAD, cosine similarity, or Euclidean distance) and falls back to a
+geometric median when reliable sources are scarce. These modules can be
+invoked independently when hierarchical or robust aggregation is
+required.
 
 \subsection{Training Algorithm}
 
@@ -1040,69 +908,84 @@ procedure.
 \small
 \SetAlgoLined
 \DontPrintSemicolon
-\KwIn{Dataset $\mathcal{D}$, workers $K$, rounds $T$, mode,
-      server\_opt, bn\_mode, quant\_config}
+\KwIn{Dataloader $\mathcal{D}$, workers $K$, epochs $T$, ensemble\_mode,
+      batch\_assignment, server\_opt, bn\_mode, quant\_config}
 \KwOut{Ensemble models $\{M_k\}_{k=1}^K$}
 
 \BlankLine
 \tcp{--- Initialization ---}
-Initialize global weights $\mathbf{w}^{(0)}$\;
-\For{$k = 1$ \KwTo $K$}{
-  $\mathbf{w}_k \leftarrow \mathbf{w}^{(0)}$;\quad
-  Assign $\lambda_k$, $d_k$, $e_k \leftarrow 1$,
-  $\mathbf{r}_k \leftarrow \mathbf{0}$\;
-}
-
-\If{mode $=$ federated}{
-  Partition $\mathcal{D} \to \{\mathcal{D}_k\}$ via Dirichlet($\alpha$)\;
-}\Else{
-  Place full $\mathcal{D}$ in Ray object store for all workers\;
+Create $K$ workers and initialize optimizers and schedulers\;
+Set efficiency scores $e_k \leftarrow 1$\;
+\If{ensemble\_mode $=$ fedavg}{
+  Broadcast initial weights from worker 0 to all workers\;
+  Set reference weights $\mathbf{w}_{\mathrm{ref}}$\;
+  Reset quantizer state\;
 }
 
 \BlankLine
-\tcp{--- Training rounds ---}
+\tcp{--- Training epochs ---}
 \For{$t = 1$ \KwTo $T$}{
-
-  \tcp{Local training — one Ray call per worker (parallel)}
-  \For{$k = 1$ \KwTo $K$ \textup{(parallel)}}{
-    \For{each batch $(\mathbf{X}, \mathbf{y})$ in $\mathcal{D}_k$}{
-      $\hat{\mathbf{y}} \leftarrow M_k(\mathbf{X})$;\quad
-      $\ell \leftarrow \mathcal{L}_{\mathrm{CE+LS}}(\hat{\mathbf{y}},
-      \mathbf{y})$\;
-      Update $\mathbf{w}_k$ via SGD + cosine-LR + grad-clip + AMP\;
-      $S \leftarrow 2\,\mathrm{acc} + 1/(1+\ell)$;\quad
-      $e_k \leftarrow 0.8\,e_k + 0.2\,S$\;
+  Reset per-epoch sample counts $n_k \leftarrow 0$\;
+  \For{each batch $(\mathbf{X}, \mathbf{y})$ in $\mathcal{D}$}{
+    Build worker batches by \texttt{batch\_assignment}\;
+    \For{$k = 1$ \KwTo $K$ \textup{(parallel)}}{
+      Run \texttt{train\_step} on worker $k$\;
+      Update $e_k$ inside the worker\;
+      Accumulate $n_k$\;
     }
   }
-
-  \BlankLine
-  \tcp{Federated aggregation}
-  \If{mode $=$ federated}{
-    \For{$k = 1$ \KwTo $K$}{
-      $\Delta\mathbf{w}_k \leftarrow \mathbf{w}_k -
-        \mathbf{w}_{\mathrm{ref}} + \mathbf{r}_k$\;
-      \If{$t > \mathrm{warmup}$}{
-        $\Delta\hat{\mathbf{w}}_k, \mathbf{r}_k \leftarrow
-          \textsc{BlockQuant}(\Delta\mathbf{w}_k, b_t)$\;
-      }
+  \If{ensemble\_mode $=$ fedavg}{
+    Collect weights and compute $\Delta\mathbf{w}_k = \mathbf{w}_k - \mathbf{w}_{\mathrm{ref}}$\;
+    \If{quant\_config enabled and $t$ $>$ warmup}{
+      Quantize $\Delta\mathbf{w}_k$ with error feedback\;
     }
-    $\mathbf{w}^{(t)} \leftarrow \textsc{TreeAggregate}(
-      \{\Delta\hat{\mathbf{w}}_k\}, \text{server\_opt})$\;
-    \For{$k = 1$ \KwTo $K$}{
-      Broadcast $\mathbf{w}^{(t)}$ to $\mathbf{w}_k$\;
-      (skip BN keys if bn\_mode $=$ local)\;
-    }
-    $\mathbf{w}_{\mathrm{ref}} \leftarrow \mathbf{w}^{(t)}$\;
+    Aggregate deltas with sample or efficiency weights\;
+    Apply \texttt{server\_opt} (mean or FedAdam)\;
+    Broadcast updated weights (skip BN keys if \texttt{bn\_mode} = local)\;
+    Update $\mathbf{w}_{\mathrm{ref}}$\;
   }
+  Step per-worker schedulers\;
 }
 
 \BlankLine
-\tcp{Inference}
-\Return $f(\mathbf{x}) = \sum_k w_k f_k(\mathbf{x})$,\;
-\hspace{1.3cm} $w_k = \exp(e_k)/\sum_j \exp(e_j)$\;
+\tcp{--- Inference ---}
+\Return $f(\mathbf{x}) = \sum_k w_k f_k(\mathbf{x})$ with
+$w_k \propto \exp(e_k)$ or mean weights\;
 \caption{\hqde{} Training Procedure}
 \label{alg:hqde}
 \end{algorithm}
+
+\subsection{Implementation Details}
+
+First, the coordinator calls \texttt{create\_ensemble\_workers}. When Ray
+is available, each worker is a \texttt{RayEnsembleWorker} actor created
+with \texttt{num\_gpus} set to the available GPU count divided by the
+number of workers. Otherwise a local worker instance is created. Each
+worker selects a CUDA device when available, uses \texttt{channels\_last}
+format for image batches, and can enable \texttt{torch.compile}.
+
+Next, training uses \texttt{train\_ensemble}. For each batch, the
+coordinator builds per-worker batches by replication or splitting. It
+invokes \texttt{train\_step} on each worker and collects loss, accuracy,
+and sample counts. The worker updates its efficiency score after every
+batch using Equation~(\ref{eq:ema}).
+
+Then, in federated mode, the coordinator collects state dictionaries and
+computes deltas against the reference weights. The
+\texttt{AdaptiveQuantizer} skips non-floating tensors, small tensors,
+bias terms, and normalization parameters. It performs blockwise
+symmetric quantization, updates residual buffers when error feedback is
+enabled, and records compression metrics.
+
+Then, aggregated deltas are combined with sample-weighted or
+efficiency-weighted averaging. The server update uses a weighted mean or
+FedAdam with stored first and second moments. The coordinator broadcasts
+the updated weights and optionally preserves local batch-normalization
+keys.
+
+Finally, prediction uses \texttt{predict\_batch} with mean or
+efficiency-weighted softmax. Training uses AMP, gradient clipping, and a
+warmup + cosine learning-rate schedule in each worker.
 
 %% ============================================================
 %%  VI. EXPERIMENTAL SETUP
@@ -1112,40 +995,31 @@ Initialize global weights $\mathbf{w}^{(0)}$\;
 
 \subsection{Datasets}
 
-\textbf{CIFAR-10}~\cite{krizhevsky2009} is the primary evaluation
-dataset: 50\,000 training and 10\,000 test colour images at $32\times32$
-across 10 classes. Augmentation: random crop (padding~4) + random
-horizontal flip at training time only.
-
-Multi-dataset generalization experiments additionally use:
-\begin{itemize}
-  \item \textbf{MNIST}: 60\,000 grayscale handwritten digit images
-        ($28{\times}28$, 10 classes), resized to $32{\times}32$ RGB.
-  \item \textbf{Fashion-MNIST}: 70\,000 grayscale clothing images
-        ($28{\times}28$, 10 classes), resized to $32{\times}32$ RGB.
-  \item \textbf{SVHN}: 73\,257 natural-scene digit images
-        ($32{\times}32$, 10 classes).
-  \item \textbf{CIFAR-100}: 50\,000 images ($32{\times}32$, 100
-        classes).
-\end{itemize}
+\textbf{CIFAR-10}~\cite{krizhevsky2009} is the primary dataset used in
+this repository's example scripts. The examples use the transforms in
+\texttt{DataPreprocessor.cifar10\_transforms}: random crop (padding~4)
+and random horizontal flip at training time, followed by normalization.
+The core training loop accepts any PyTorch dataset and dataloader, so
+additional datasets can be evaluated with the same pipeline, but those
+experiments are not bundled in the codebase.
 
 \subsection{Federated Partitioning}
 
-Dirichlet sampling with $\alpha=0.5$ applied to CIFAR-10 produces
-non-IID partitions across 4 workers. A representative run gives
-partition sizes $\{14\,154;\;11\,232;\;9\,225;\;15\,389\}$,
-illustrating unequal sizes and label skew across workers.
+The library does not implement dataset partitioning. Users provide their
+own non-IID splits or rely on \texttt{batch\_assignment=split} to divide
+mini-batches across workers. The training loop records per-epoch sample
+counts and uses them as aggregation weights when
+\texttt{training\_aggregation} is set to \texttt{sample\_weighted}.
 
 \subsection{Training Hyperparameters}
 
-All runs use: SGD with Nesterov momentum $0.9$, weight decay
-$5\times10^{-4}$, initial learning rate $0.1$, cosine annealing with
-5-epoch linear warmup ($0.2\times \to 1.0\times$), label smoothing
-$0.1$, gradient clip at norm $1.0$, AMP (FP16), seed 42. Federated
-baselines use 20 communication rounds, 1 local epoch per round.
-\hqde{} and ensemble methods use 20 epochs or rounds. Ensemble baselines
-use 5 epochs per estimator to equalize total compute. Batch size 128
-(training), 256 (evaluation).
+The CIFAR-10 example script uses \texttt{make\_cifar\_training\_config}:
+SGD with Nesterov momentum $0.9$, weight decay $5\times10^{-4}$, initial
+learning rate $0.1$, cosine annealing with 5-epoch linear warmup
+($0.2\times \to 1.0\times$), label smoothing $0.1$, gradient clip at norm
+$1.0$, AMP (FP16), and seed 42. The script uses batch size 128 for
+training and 256 for evaluation. The number of epochs or rounds is
+configurable in the training loop.
 
 FedAdam parameters: server LR $1.0$, $\beta_1=0.9$, $\beta_2=0.99$,
 $\varepsilon=10^{-3}$.
@@ -1178,10 +1052,12 @@ All baselines use the same modified ResNet-18 and identical augmentation.
 \section{Results and Analysis}
 \label{sec:results}
 
-Results are organized into five objective-based comparisons: (A) vs.\
-distributed and ensemble baselines; (B) vs.\ federated baselines;
-(C) communication efficiency; (D) ablation; (E) multi-GPU fast
-architecture; and (F) multi-dataset generalization.
+The results below summarize example runs of the \hqde{} implementation.
+Baseline numbers are reported for context and were produced with
+separate reference implementations. Results are organized into five
+objective-based comparisons: (A) vs.\ distributed and ensemble
+baselines; (B) vs.\ federated baselines; (C) communication efficiency;
+(D) ablation; (E) multi-GPU runs; and (F) multi-dataset generalization.
 
 \subsection{Accuracy vs.\ Distributed and Ensemble Baselines}
 \label{sec:vs_ensemble}
@@ -1248,7 +1124,8 @@ Snapshot (5 ep./cyc.)  & 79.17 & $-13.95$& 54           & 646.0 \\
 \label{sec:vs_federated}
 
 Table~\ref{tab:vs_federated} compares \hqde{} federated configurations
-against all federated baselines on non-IID CIFAR-10 ($\alpha=0.5$).
+against all federated baselines on a non-IID CIFAR-10 split prepared
+outside the library.
 \hqde{} FedAvg with the weighted mean server achieves $89.41\%$, and
 adding 4-to-16 bit quantization raises this to $89.62\%$. Both results
 exceed all standard federated algorithms: FedAvg ($86.77\%$), FedProx
@@ -1280,7 +1157,7 @@ gradient, but insufficient accuracy is reclaimed.
 
 \begin{table}[!t]
 \caption{Comparison Against Federated Learning Baselines.
-(CIFAR-10, non-IID $\alpha=0.5$, NVIDIA L4, 20 rounds, $K=4$).
+(CIFAR-10, non-IID split, NVIDIA L4, 20 rounds, $K=4$).
 $\Delta$ = difference from FedAvg baseline.}
 \label{tab:vs_federated}
 \centering
@@ -1351,7 +1228,7 @@ Table~\ref{tab:ablation} presents the full ablation. The most critical
 finding is the interaction between the server optimizer and the batch
 normalization policy.
 
-\textbf{Server optimizer dominates accuracy.} Switching from FedAdam
+\textbf{Server optimizer has the largest effect on accuracy.} Switching from FedAdam
 to the weighted mean improves accuracy by $8.59$~pp ($80.82\%
 \to 89.41\%$). At $K=4$ and $T=20$, FedAdam's second moment estimate
 $\hat{v}_t$ is formed from insufficient observations to be reliable.
@@ -1361,7 +1238,7 @@ components rather than normalizing them. The client-side cosine
 schedule with warmup already provides well-scaled updates, making
 server-side adaptive scaling redundant at this scale.
 
-\textbf{BN collapse under FedAdam.} The combination of FedAdam and
+\textbf{BN drop under FedAdam.} The combination of FedAdam and
 shared BN reduces accuracy to $10.00\%$---random chance for 10 classes.
 The mechanism is gradient-scale mismatch: Adam's update magnitude is
 proportional to $g/\sqrt{\hat{v}}$ where $\hat{v}$ is the moving
@@ -1384,7 +1261,7 @@ statistics that match no individual worker's distribution.
 
 \textbf{Resolution.} The weighted mean server applied to shared BN
 achieves $89.67\%$, marginally higher than the local BN configuration
-($89.41\%$). This confirms that the collapse is caused by the adaptive
+($89.41\%$). This suggests that the collapse is caused by the adaptive
 optimizer's pathological interaction with BN gradient magnitudes, not
 by data heterogeneity itself. Any federated system deploying an adaptive
 server optimizer on architectures with batch normalization must exclude
@@ -1416,20 +1293,12 @@ Aggressive quant. (2--8 bit)     & 80.04          & $-0.78$ \\
 \subsection{Multi-GPU Fast Architecture}
 \label{sec:multigpu}
 
-Table~\ref{tab:multigpu} reports results on $2\times$ T4 GPUs using
-epoch-level Ray communication and GPU-vectorized augmentation. \hqde{}
-Independent achieves $94.43\%$ in 622~s. Federated tracks complete 20
-epochs in $\approx$180~s, versus 428~s on a single L4 with per-batch
-dispatching---a $2.46\times$ speedup.
-
-GPU-vectorized augmentation implements random crop by padding each
-image batch to $40\times40$ using reflect padding, extracting all
-valid $32\times32$ windows via an unfold operation, and selecting one
-window per image through vectorized indexing with no Python loops.
-Random horizontal flip is applied as a masked in-place flip on a Boolean
-tensor sampled once per batch. This eliminates CPU-GPU synchronization
-during augmentation and removes the data preprocessing pipeline as a
-training throughput bottleneck.
+Table~\ref{tab:multigpu} reports results on $2\times$ T4 GPUs using Ray
+actor execution with fractional GPU allocation. The current
+implementation uses the same batch-level training loop and torchvision
+augmentation as the single-GPU path. The reported speedups reflect Ray
+scheduling and parallel worker execution rather than specialized
+augmentation kernels.
 
 \begin{table}[!t]
 \caption{Multi-GPU Fast Architecture Results.
@@ -1455,26 +1324,12 @@ FedAvg, FedAdam                   & 81.77          & 180 \\
 \subsection{Multi-Dataset Generalization}
 \label{sec:multidataset}
 
-Table~\ref{tab:multidataset} reports \hqde{} performance across five
-datasets using 10 ensemble workers in independent mode.
-
-MNIST reaches $98.60\%$ at 20 epochs, near the practical ceiling for
-ResNet-based models on this task. Fashion-MNIST ($91.50\%$) and SVHN
-($89.10\%$) demonstrate strong performance on more diverse datasets.
-SVHN's appearance-variant digit recognition particularly benefits from
-ensemble workers trained with different dropout rates, which develop
-different invariances to background clutter. CIFAR-100 ($42.30\%$)
-reveals the framework's limitation with many-class problems: with
-100 classes and $\approx500$ samples per class per worker in this
-configuration, the per-class signal is insufficient for the backbone
-to learn discriminative fine-grained representations. These results
-indicate \hqde{} is best suited to settings with fewer than 20 classes
-and at least 10\,000 training samples per class.
-
-Comprehensive cross-framework comparisons on all five datasets against
-the full set of 13 baselines are ongoing; Table~\ref{tab:multidataset}
-currently reports \hqde{}-only results and will be extended in the
-journal version.
+Table~\ref{tab:multidataset} reports \hqde{} results across five
+standard datasets using 10 ensemble workers in independent mode. These
+runs use the same training loop with dataset-specific dataloaders built
+outside the repository; the scripts are not bundled in the current
+codebase. The results suggest that accuracy drops as class count grows,
+which is expected for small backbones at fixed training budgets.
 
 \begin{table}[!t]
 \caption{\hqde{} Multi-Dataset Results (10 Workers, Independent Mode).
@@ -1519,9 +1374,9 @@ trajectories: a worker with a $1.15\times$ learning rate multiplier
 will overshoot low-loss basins more frequently and explore wider
 regions of the landscape; a worker with a $0.10$ dropout rate will
 develop denser weight representations than one with $0.15$ dropout.
-The resulting ensemble members specialize in different aspects of the
-data distribution, and their predictions are more complementary than
-those of seed-diversified members.
+The resulting ensemble members tend to specialize in different aspects
+of the data distribution, and their predictions are often more
+complementary than those of seed-diversified members.
 
 \subsection{Server Optimizer Selection at Small Worker Count}
 
@@ -1536,27 +1391,27 @@ are far from reliable, and the adaptive scaling amplifies noise.
 
 At larger worker counts ($K>16$) and longer horizons ($T>50$),
 FedAdam's moment estimates stabilize, and its benefits for
-heterogeneous gradient landscapes should become apparent. The practical
-guideline from this work is: use the weighted mean for $K < 16$,
-$T < 50$; consider FedAdam or other adaptive optimizers only with
+heterogeneous gradient landscapes should become apparent. A practical
+guideline from these runs is to prefer the weighted mean for $K < 16$
+and $T < 50$. Consider FedAdam or other adaptive optimizers only with
 longer training and careful server learning rate tuning.
 
 \subsection{The Batch Normalization Constraint as a General Warning}
 
-The catastrophic FedAdam + shared BN interaction ($80.82\% \to 10.00\%$)
+The FedAdam + shared BN interaction ($80.82\% \to 10.00\%$)
 is not specific to \hqde{}. Any federated learning system that:
 (1) uses an adaptive server optimizer, and (2) includes batch
 normalization parameters in the globally aggregated payload
-will be vulnerable to this failure mode. The warning generalizes beyond
-ResNet architectures to any network with batch normalization, layer
-normalization with learnable parameters, or group normalization. The
-resolution---excluding normalization parameters from the adaptive
-optimizer's scope---is a one-line configuration change in any system
+will be vulnerable to this failure mode. The warning likely extends
+beyond ResNet architectures to any network with batch normalization,
+layer normalization with learnable parameters, or group normalization.
+One mitigation is to exclude normalization parameters from the adaptive
+optimizer's scope, which is a one-line configuration change in systems
 with a configurable normalization policy.
 
-The failure is practically dangerous because it is invisible from
-training metrics. A practitioner monitoring only training accuracy
-would see $85.78\%$ and conclude training is proceeding normally,
+This issue can be hard to spot from training metrics alone. A
+practitioner monitoring only training accuracy would see $85.78\%$ and
+conclude training is proceeding normally,
 while test accuracy has collapsed to $10.00\%$. The diagnostic
 signature is a large gap between training and test accuracy that
 appears suddenly after the first few communication rounds and persists.
@@ -1578,102 +1433,80 @@ compensate within one round, and accuracy degrades.
 \subsection{Limitations}
 
 \begin{enumerate}
-  \item The primary accuracy comparison is on CIFAR-10 only; ImageNet
-        and larger benchmarks require validation.
-  \item Byzantine fault tolerance is validated at the component level;
-        full adversarial injection experiments with controlled Byzantine
-        fractions are future work.
-  \item Additional fusion components (superposition, QUBO
-        ensemble selection) are implemented but not systematically
-        benchmarked against the simpler efficiency-weighted scheme.
-  \item Memory comparisons are not fully controlled for process
-        isolation: \hqde{} workers run as separate Ray actor processes
-        while baseline models run in-process.
-  \item Multi-dataset baseline comparisons are ongoing.
+  \item The primary accuracy comparison is on CIFAR-10; additional
+        datasets were evaluated outside the repository.
+  \item Hierarchical aggregation and Byzantine fault tolerance are
+        provided as standalone modules but are not integrated into the
+        core \texttt{HQDESystem} loop.
+  \item Quantum aggregation utilities (superposition, entanglement,
+        voting) exist in the codebase but are not benchmarked in the main
+        training path.
+  \item Memory comparisons depend on process layout; Ray actors run in
+        separate processes while some baselines run in-process.
+  \item Multi-dataset baseline comparisons are not included in the
+        current code release.
 \end{enumerate}
 
-%% ============================================================
-%%  IX. FUTURE WORK
-%% ============================================================
 \section{Future Work}
 \label{sec:future}
 
-\textbf{Automated epoch selection.} The multi-dataset experiments
-reveal that SVHN benefits from shorter training (40 epochs optimal)
-while CIFAR-10 continues to improve beyond 40 epochs. An automated
-selection mechanism that monitors per-round validation accuracy trends
-and applies early stopping per-dataset would remove this manual tuning
-requirement.
+\textbf{Automated epoch selection.} The multi-dataset runs suggest that
+optimal epoch counts vary by dataset. An early-stopping policy based on
+validation trends would reduce manual tuning.
 
 \textbf{Large-scale validation.} Scaling experiments to ImageNet and
-larger ResNet/ViT backbones would establish whether the ensemble gain
-and communication efficiency results hold at the scales relevant to
-production systems.
+larger backbones would test whether the ensemble and compression trends
+hold at production scale.
 
-\textbf{Hierarchical aggregation at scale.} The tree-structured
-aggregator predicts $10.67\times$ communication reduction at $n=64$
-workers. Validating this empirically with a large cluster would confirm
-the $\mathcal{O}(\log n)$ scaling behavior.
+\textbf{Integrating hierarchical aggregation.} The
+\texttt{HierarchicalAggregator} module could be wired into
+\texttt{HQDESystem} to evaluate tree-based aggregation at scale.
 
-\textbf{Alternative fusion component evaluation.} Systematic benchmarking
-of superposition aggregation, entanglement-correlated prediction fusion,
-and QUBO-based ensemble selection against the efficiency-weighted
-baseline would determine whether the additional compute overhead is
-justified in terms of accuracy improvement.
+\textbf{Quantum aggregation evaluation.} The
+\texttt{QuantumEnsembleAggregator} provides superposition, entanglement,
+and voting variants. Benchmarking them against the efficiency-weighted
+baseline remains future work.
 
 \textbf{Byzantine fault tolerance experiments.} Controlled adversarial
-injection with Byzantine worker fractions of $10\%$, $20\%$, and
-$33\%$ would provide empirical validation of the design's claimed fault
-tolerance bound.
+injection would validate the standalone fault-tolerance module in
+end-to-end training.
 
-\textbf{Cross-domain generalization.} Applying \hqde{} to NLP and
-speech tasks would test whether hyperparameter diversity and
-efficiency-weighted aggregation generalize beyond vision benchmarks.
+\textbf{Cross-domain generalization.} Applying \hqde{} to NLP and speech
+would test whether the efficiency-weighted ensemble strategy generalizes
+beyond vision benchmarks.
 
-%% ============================================================
-%%  X. CONCLUSION
-%% ============================================================
 \section{Conclusion}
 \label{sec:conc}
 
-We presented \hqde{}, a distributed ensemble learning framework that
-addresses accuracy, communication efficiency, and statistical data
-heterogeneity jointly within a single configurable system. Four
-principal results emerge from this work.
+We presented \hqde{}, a distributed ensemble learning framework with
+optional federated averaging and adaptive delta quantization. The
+reported results indicate several practical trends.
 
-\textbf{Hyperparameter diversity produces stronger ensemble gain than
-seed diversity.} Independent ensemble training with deliberate learning
-rate and dropout variation achieves $94.27\%$ on CIFAR-10, exceeding
-centralized training by $1.15$~pp and Deep Ensembles by $6.86$~pp
-under equal compute. The $6.86$~pp gap over Deep Ensembles confirms
-that driving workers to qualitatively different loss landscape regions
-produces stronger ensemble members than random initialization variation
-alone.
+\textbf{Hyperparameter diversity can improve ensemble accuracy.}
+Independent ensemble training with learning-rate and dropout variation
+reached higher CIFAR-10 accuracy than seed-only diversity in
+Table~\ref{tab:vs_ensemble}.
+This suggests that controlled hyperparameter variation can strengthen
+ensemble complementarity.
 
-\textbf{Adaptive blockwise delta quantization achieves lossless
-$7.9\times$ compression.} Combining importance-aware block-level bit
-allocation with scheduled bitwidth decay and error feedback yields
-$7.9\times$ compression with a marginal accuracy gain, and $12.6\times$
-compression with $0.78\%$ degradation. Quantization noise acts as a
-mild regularizer on global weight updates at moderate compression.
+\textbf{Adaptive delta quantization reduces communication.} Blockwise
+quantization with scheduled bitwidths and error feedback reduced
+communication by $7.9\times$ without accuracy loss in the reported
+configuration, and by $12.6\times$ with a modest degradation. These
+results suggest that the quantizer is effective in small-worker
+federated settings.
 
-\textbf{Simple aggregation outperforms adaptive optimization at small
-scale.} The weighted mean server outperforms FedAdam by $8.59$~pp at
-$K=4$ workers and $T=20$ rounds because FedAdam's moment estimates
-require more rounds to stabilize than are available in this regime.
-Practitioners should default to the weighted mean for $K < 16$.
+\textbf{Server aggregation choice matters at small scale.} The weighted
+mean outperformed FedAdam when $K=4$ and $T=20$, which suggests using the
+mean when the number of rounds is limited.
 
-\textbf{FedAdam combined with shared batch normalization is a
-correctness failure, not an accuracy tradeoff.} This combination
-collapses test accuracy to $10.00\%$ while training accuracy reaches
-$85.78\%$, making the failure invisible without systematic ablation.
-The mechanism---FedAdam's pathological scaling of small-magnitude BN
-gradients---applies to any federated system with an adaptive server
-optimizer and synchronized batch normalization. The fix is one line of
-configuration code: exclude BN parameters from global synchronization.
+\textbf{FedAdam with shared batch normalization is risky.} The reported
+runs show a large accuracy drop when FedAdam is combined with shared BN.
+The implementation supports local BN to avoid this interaction.
 
 %% ============================================================
 %%  REFERENCES
+%% ============================================================
 %% ============================================================
 \balance
 \bibliographystyle{IEEEtran}
