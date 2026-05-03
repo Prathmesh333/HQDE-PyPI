@@ -59,7 +59,22 @@ Corresponding author: Prathamesh Nikam
 %% ============================================================
 
 \begin{abstract}
-Distributed ensemble training must balance model diversity, communication cost, and stability under heterogeneous data. Existing frameworks often handle these goals in isolation. We implement \hqde{}, a distributed ensemble system that trains multiple workers in parallel, tracks per-worker efficiency, and optionally performs epoch-level federated averaging with adaptive delta quantization. The implementation uses Ray actors when Ray is available and falls back to local workers otherwise, so each worker keeps its model and optimizer state in memory. First, workers run local mini-batch updates and update an efficiency score based on accuracy and loss. Next, in federated mode, workers send weight deltas that are compressed with blockwise symmetric quantization, scheduled bitwidths, and error feedback after a warmup period. Then, the server aggregates deltas with a weighted mean or a FedAdam-style update and broadcasts the new reference weights. Finally, inference uses efficiency-weighted softmax or mean fusion of logits. We report CIFAR-10 example results from the provided scripts and discuss trade-offs across aggregation, quantization, and batch-normalization policies.
+Distributed ensemble training must balance model diversity, communication
+cost, and stability under heterogeneous data. Existing frameworks often
+handle these goals in isolation. We implement \hqde{}, a distributed
+ensemble system that trains multiple workers in parallel, tracks
+per-worker efficiency, and optionally performs epoch-level federated
+averaging with adaptive delta quantization. The implementation uses Ray
+actors when Ray is available and falls back to local workers otherwise.
+First, workers run local mini-batch updates and update an efficiency
+score based on accuracy and loss. Next, in federated mode, workers send
+weight deltas that are compressed with blockwise symmetric quantization,
+scheduled bitwidths, and error feedback after a warmup period. Then, the
+server aggregates deltas with a weighted mean or a FedAdam-style update
+and broadcasts the new reference weights. Finally, inference uses
+efficiency-weighted softmax or mean fusion of logits. We report CIFAR-10
+example results from the provided scripts and discuss trade-offs across
+aggregation, quantization, and batch-normalization policies.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -1469,7 +1484,8 @@ reported results indicate several practical trends.
 
 \textbf{Hyperparameter diversity can improve ensemble accuracy.}
 Independent ensemble training with learning-rate and dropout variation
-reached higher CIFAR-10 accuracy than seed-only diversity in our runs.
+reached higher CIFAR-10 accuracy than seed-only diversity in
+Table~\ref{tab:vs_ensemble}.
 This suggests that controlled hyperparameter variation can strengthen
 ensemble complementarity.
 
