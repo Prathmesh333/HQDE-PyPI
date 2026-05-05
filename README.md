@@ -16,6 +16,7 @@ HQDE combines quantum-inspired algorithms with distributed computing to deliver 
 - [Key Features](#key-features)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
+- [Transformer Support (NEW)](#transformer-support-new)
 - [Architecture Overview](#architecture-overview)
 - [Quantum-Inspired Algorithms](#quantum-inspired-algorithms)
 - [Distributed Computing](#distributed-computing)
@@ -104,6 +105,85 @@ python examples/cifar10_test.py          # Real CIFAR-10 dataset
 ```
 
 Current releases log epoch loss, accuracy, and learning rate directly. In `independent + replicate` mode there is no epoch-end synchronization message because workers stay diverse until inference time.
+
+---
+
+## Transformer Support (NEW)
+
+HQDE now supports **Transformer-based models** for NLP tasks! 🎉
+
+### Text Classification with Transformers
+
+```python
+from hqde import (
+    create_hqde_system,
+    CBTTransformerClassifier,
+    SimpleTokenizer,
+    CBTDataset,
+    TextDataLoader,
+    make_cbt_training_config
+)
+
+# Prepare text data
+texts = ["I always fail at everything", "This always happens to me"]
+labels = [0, 1]  # Cognitive distortion types
+
+# Build tokenizer
+tokenizer = SimpleTokenizer(vocab_size=5000, max_seq_length=128)
+tokenizer.build_vocab(texts, min_freq=1)
+
+# Create dataset
+dataset = CBTDataset(texts, labels, tokenizer)
+loader = TextDataLoader.create_text_loader(dataset, batch_size=32)
+
+# Configure HQDE for transformers
+model_kwargs = {
+    'vocab_size': len(tokenizer.word2idx),
+    'num_classes': 10,
+    'd_model': 256,
+    'nhead': 8,
+    'num_encoder_layers': 4
+}
+
+training_config = make_cbt_training_config(
+    ensemble_mode='independent',
+    learning_rate=3e-4
+)
+
+# Create HQDE system with transformer
+hqde_system = create_hqde_system(
+    model_class=CBTTransformerClassifier,
+    model_kwargs=model_kwargs,
+    num_workers=4,
+    training_config=training_config
+)
+
+# Train and predict
+hqde_system.train(loader, num_epochs=20)
+predictions = hqde_system.predict(test_loader)
+hqde_system.cleanup()
+```
+
+### Available Transformer Models
+
+| Model | Description | Use Case |
+|-------|-------------|----------|
+| `TransformerTextClassifier` | Standard transformer encoder | General text classification |
+| `LightweightTransformerClassifier` | Reduced parameters | Fast training, small datasets |
+| `CBTTransformerClassifier` | Domain-adapted for CBT | Mental health text analysis |
+
+### Applications
+
+- **Cognitive Behavioral Therapy (CBT)**: Classify cognitive distortions in therapy notes
+- **Sentiment Analysis**: Customer reviews, social media
+- **Content Moderation**: Toxic comment detection
+- **Medical NLP**: Clinical note classification
+
+### Documentation
+
+- **Full Guide**: [docs/TRANSFORMER_EXTENSION.md](docs/TRANSFORMER_EXTENSION.md)
+- **CBT Example**: [examples/CBT_CLASSIFICATION_README.md](examples/CBT_CLASSIFICATION_README.md)
+- **Code Example**: [examples/cbt_transformer_example.py](examples/cbt_transformer_example.py)
 
 ### Training Modes
 

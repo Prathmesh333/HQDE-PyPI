@@ -17,6 +17,22 @@ from .core.hqde_system import (
 )
 from .models import SmallImageResNet18
 
+# Transformer models (optional)
+try:
+    from .models import (
+        TransformerTextClassifier,
+        LightweightTransformerClassifier,
+        CBTTransformerClassifier,
+        SmallTransformerClassifier,
+        StandardTransformerClassifier
+    )
+except ImportError:
+    TransformerTextClassifier = None
+    LightweightTransformerClassifier = None
+    CBTTransformerClassifier = None
+    SmallTransformerClassifier = None
+    StandardTransformerClassifier = None
+
 # Quantum-inspired components
 from .quantum import (
     QuantumEnsembleAggregator,
@@ -48,6 +64,34 @@ from .utils import (
     make_cifar_training_config,
 )
 
+# Text/Transformer utilities (optional)
+try:
+    from .utils import (
+        SimpleTokenizer,
+        TextClassificationDataset,
+        CBTDataset,
+        TextDataLoader,
+        TextDataConfig,
+        create_cbt_sample_data,
+        preprocess_cbt_text,
+        make_transformer_training_config,
+        make_cbt_training_config,
+        make_lightweight_transformer_config,
+        make_large_transformer_config
+    )
+except ImportError:
+    SimpleTokenizer = None
+    TextClassificationDataset = None
+    CBTDataset = None
+    TextDataLoader = None
+    TextDataConfig = None
+    create_cbt_sample_data = None
+    preprocess_cbt_text = None
+    make_transformer_training_config = None
+    make_cbt_training_config = None
+    make_lightweight_transformer_config = None
+    make_large_transformer_config = None
+
 __all__ = [
     # Core
     'HQDESystem',
@@ -56,6 +100,13 @@ __all__ = [
     'QuantumInspiredAggregator',
     'DistributedEnsembleManager',
     'SmallImageResNet18',
+
+    # Transformer models
+    'TransformerTextClassifier',
+    'LightweightTransformerClassifier',
+    'CBTTransformerClassifier',
+    'SmallTransformerClassifier',
+    'StandardTransformerClassifier',
 
     # Quantum
     'QuantumEnsembleAggregator',
@@ -75,4 +126,17 @@ __all__ = [
     'DataLoaderConfig',
     'DataPreprocessor',
     'make_cifar_training_config',
+    
+    # Text/Transformer utils
+    'SimpleTokenizer',
+    'TextClassificationDataset',
+    'CBTDataset',
+    'TextDataLoader',
+    'TextDataConfig',
+    'create_cbt_sample_data',
+    'preprocess_cbt_text',
+    'make_transformer_training_config',
+    'make_cbt_training_config',
+    'make_lightweight_transformer_config',
+    'make_large_transformer_config',
 ]
