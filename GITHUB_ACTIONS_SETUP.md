@@ -122,10 +122,7 @@ git commit -m "Release v0.1.5 - Critical accuracy fixes
 - Added ensemble diversity
 - Added gradient clipping
 
-Expected improvements:
-- CIFAR-10: +16-21% accuracy
-- SVHN: +13-16% accuracy
-- CIFAR-100: +31-41% accuracy"
+Release notes should not include expected accuracy claims. Add measured benchmark results only after running the benchmark suite and saving the artifacts."
 
 # 4. Create and push tag
 git tag v0.1.5

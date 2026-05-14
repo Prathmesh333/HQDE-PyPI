@@ -1,285 +1,206 @@
-# HQDE Framework - Installation and Usage Guide
+# HQDE Installation and Usage Guide
 
-**Version:** 0.1.5  
-**Last Updated:** February 2025
+This guide describes how to install and run the current HQDE package from this repository. It avoids fixed benchmark claims; use your own executed runs for thesis results.
 
-This guide provides instructions for installing and running the HQDE (Hierarchical Quantum-Distributed Ensemble Learning) framework.
+## Requirements
 
-##  What's New in v0.1.5
-
-**Critical Accuracy Improvements:**
--  **Enabled Weight Aggregation (FedAvg)** - Workers now share knowledge after each epoch
--  **Reduced Dropout to 0.15** - Optimized for ensemble learning
--  **Added Learning Rate Scheduling** - CosineAnnealingLR for better convergence
--  **Added Ensemble Diversity** - Different LR and dropout per worker
--  **Added Gradient Clipping** - Improved training stability
-
-**Expected Performance Gains:**
-- CIFAR-10: +16-21% accuracy improvement
-- SVHN: +13-16% accuracy improvement  
-- CIFAR-100: +31-41% accuracy improvement
-
-**Upgrade to v0.1.5:**
-```bash
-pip install hqde==0.1.5 --upgrade
-```
-
-See [CHANGELOG.md](CHANGELOG.md) for complete details.
-
----
-
-## Prerequisites
-
-### System Requirements
-- **Python**: 3.9 or higher
-- **GPU**: CUDA-compatible GPU (optional but recommended)
-- **Memory**: At least 4GB RAM
-- **Storage**: 2GB free space
-
-### Dependencies
-The framework automatically installs:
-- PyTorch (≥2.8.0)
-- Ray (≥2.49.2)
-- NumPy (≥2.0.2)
-- scikit-learn (≥1.6.1)
-- psutil (≥7.1.0)
-
----
+- Python 3.9 or newer.
+- PyTorch.
+- Ray is optional. If Ray is unavailable, HQDE uses local workers.
+- CUDA is optional but recommended for non-trivial experiments.
 
 ## Installation
 
-### From PyPI (Recommended)
+From PyPI:
+
 ```bash
 pip install hqde
 ```
 
-### From Source
+From this source tree:
+
 ```bash
 git clone https://github.com/Prathmesh333/HQDE-PyPI.git
 cd HQDE-PyPI
 pip install -e .
 ```
 
-### Using PYTHONPATH (Development)
-```powershell
-# Windows PowerShell
-cd "path\to\HQDE-PyPI"
-$env:PYTHONPATH = "."
-python examples/cifar10_synthetic_test.py
-```
+Development install:
 
 ```bash
-# Linux/Mac
-cd "/path/to/HQDE-PyPI"
-export PYTHONPATH=.
-python examples/cifar10_synthetic_test.py
+pip install -e ".[dev]"
 ```
 
----
+On Windows PowerShell, when running scripts directly from the repo:
+
+```powershell
+cd "D:\MTech 2nd Year\hqde\HQDE-PyPI"
+$env:PYTHONPATH = "."
+python examples/quick_start.py
+```
 
 ## Quick Start
 
 ```python
-from hqde import create_hqde_system
-import torch.nn as nn
+from hqde import SmallImageResNet18, create_hqde_system, make_cifar_training_config
 
-class MyModel(nn.Module):
-    def __init__(self, num_classes=10, dropout_rate=0.15):  # v0.1.5: Add dropout_rate
-        super().__init__()
-        self.layers = nn.Sequential(
-            nn.Conv2d(3, 32, 3, padding=1),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate),  # v0.1.5: Use dropout_rate parameter
-            nn.MaxPool2d(2),
-            nn.Conv2d(32, 64, 3, padding=1),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate),  # v0.1.5: Use dropout_rate parameter
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten(),
-            nn.Linear(64, num_classes)
-        )
-
-    def forward(self, x):
-        return self.layers(x)
-
-# Create HQDE system
-hqde_system = create_hqde_system(
-    model_class=MyModel,
-    model_kwargs={'num_classes': 10},
-    num_workers=4,
-    quantization_config={'base_bits': 8, 'min_bits': 4, 'max_bits': 16},
-    aggregation_config={'noise_scale': 0.005, 'exploration_factor': 0.1}
+training_config = make_cifar_training_config(
+    ensemble_mode="independent",
+    batch_assignment="replicate",
+    prediction_aggregation="mean",
 )
 
-# Train (v0.1.5: Use 40+ epochs for complex datasets)
-metrics = hqde_system.train(train_loader, num_epochs=40)
+system = create_hqde_system(
+    model_class=SmallImageResNet18,
+    model_kwargs={"num_classes": 10},
+    num_workers=2,
+    training_config=training_config,
+)
 
-# Predict
-predictions = hqde_system.predict(test_loader)
-
-# Cleanup
-hqde_system.cleanup()
+metrics = system.train(train_loader, num_epochs=5, validation_loader=test_loader)
+eval_metrics = system.evaluate(test_loader)
+predictions = system.predict(test_loader)
+system.cleanup()
 ```
 
-**Expected Output (v0.1.5):**
-```
-Epoch 1/40, Average Loss: 2.3045, LR: 0.001000
-  → Weights aggregated and synchronized at epoch 1
-Epoch 2/40, Average Loss: 1.8234, LR: 0.000998
-  → Weights aggregated and synchronized at epoch 2
-...
-Epoch 40/40, Average Loss: 0.4521, LR: 0.000001
-  → Weights aggregated and synchronized at epoch 40
+## Core Data Format
 
-Final Test Accuracy: 78.5% (CIFAR-10)
+`HQDESystem` currently expects training and evaluation dataloaders to yield:
+
+```python
+(data, targets)
 ```
 
----
+or an equivalent tuple/list where `batch[0]` is the input tensor and `batch[1]` is the target tensor.
+
+Dict batches such as `{"input_ids": ..., "attention_mask": ..., "labels": ...}` are not yet supported by the core training loop. The DeBERTa Kaggle notebook uses custom worker code for that style of transformer batch.
+
+## Training Modes
+
+### Independent
+
+```python
+training_config = {
+    "ensemble_mode": "independent",
+    "batch_assignment": "replicate",
+}
+```
+
+Each worker trains on the full batch. No weight averaging happens at epoch end. Prediction aggregates worker logits.
+
+### FedAvg
+
+```python
+training_config = {
+    "ensemble_mode": "fedavg",
+    "batch_assignment": "split",
+    "training_aggregation": "sample_weighted",
+}
+```
+
+Each batch is split across workers. After each epoch, HQDE aggregates deltas and broadcasts the server model back to workers.
+
+## Optional Quantization
+
+Quantization applies only during `fedavg` aggregation.
+
+```python
+quantization_config = {
+    "base_bits": 12,
+    "min_bits": 8,
+    "max_bits": 16,
+    "block_size": 1024,
+    "warmup_rounds": 5,
+}
+
+system = create_hqde_system(
+    model_class=SmallImageResNet18,
+    model_kwargs={"num_classes": 10},
+    num_workers=4,
+    training_config={
+        "ensemble_mode": "fedavg",
+        "batch_assignment": "split",
+    },
+    quantization_config=quantization_config,
+)
+```
+
+Compression depends on tensor sizes and skipped parameters. Measure it with:
+
+```python
+system.get_performance_metrics()
+system.ensemble_manager.get_quantization_metrics()
+```
 
 ## Examples
 
-| Example | Description | Command |
-|---------|-------------|---------|
-| Quick Start | Basic demonstration | `python examples/quick_start.py` |
-| Synthetic CIFAR-10 | Comprehensive benchmark | `python examples/cifar10_synthetic_test.py` |
-| Real CIFAR-10 | Full dataset test | `python examples/cifar10_test.py` |
+| Example | Command | Notes |
+|---------|---------|-------|
+| Basic package smoke | `python examples/quick_start.py` | Small runnable example. |
+| Import smoke | `python test_imports.py` | Checks package imports. |
+| Transformer smoke | `python test_transformer_integration.py` | Currently shows the dict-batch HQDE integration gap. |
+| Kaggle notebook validation | `python validate_notebook.py` | Checks notebook JSON structure. |
 
----
+If pytest is installed:
 
-## Configuration
-
-### Quantization
-```python
-quantization_config = {
-    'base_bits': 8,    # Default precision
-    'min_bits': 4,     # High compression
-    'max_bits': 16     # High precision
-}
+```bash
+python -m pytest -q
 ```
 
-### Quantum Aggregation
-```python
-aggregation_config = {
-    'noise_scale': 0.005,
-    'exploration_factor': 0.1,
-    'entanglement_strength': 0.1
-}
-```
+## Kaggle DeBERTa Notebook
 
-### Distributed Workers
-```python
-num_workers = 4  # Adjust based on available CPU cores/GPUs
-```
+Use [examples/cbt_deberta_hqde_kaggle.ipynb](examples/cbt_deberta_hqde_kaggle.ipynb) for the CBT DeBERTa demonstration.
 
----
+The notebook is self-contained and creates a toy dataset. It has dynamic device handling:
 
-## Performance Benchmarks
+- 2x T4 on Kaggle: multiple DeBERTa workers.
+- 1 GPU: fewer workers automatically.
+- CPU or smoke mode: set `HQDE_QUICK_TEST=1` before execution for a short run.
 
-### v0.1.5 Accuracy Improvements
-
-| Dataset | v0.1.4 (5 epochs) | v0.1.5 (40 epochs) | Improvement |
-|---------|-------------------|-------------------|-------------|
-| MNIST | ~98% | ~99.2% | +1.2% |
-| Fashion-MNIST | ~87% | ~91-92% | +4-5% |
-| CIFAR-10 | ~59% | ~75-80% | **+16-21%** |
-| SVHN | ~72% | ~85-88% | **+13-16%** |
-| CIFAR-100 | ~14% | ~45-55% | **+31-41%** |
-
-### Resource Efficiency
-
-| Metric | Traditional Ensemble | HQDE | Improvement |
-|--------|---------------------|------|-------------|
-| Memory Usage | 2.4 GB | 0.6 GB | 4x reduction |
-| Training Time | 45 min | 12 min | 3.75x faster |
-| Communication | 800 MB | 100 MB | 8x less data |
-
----
-
-## Recommendations for v0.1.5
-
-1. **Epochs** ( IMPORTANT):
-   - **Complex datasets** (CIFAR-10, CIFAR-100, STL-10): Use 40+ epochs
-   - **Medium datasets** (SVHN, Fashion-MNIST): Use 20-30 epochs
-   - **Simple datasets** (MNIST): Use 10-15 epochs
-   - More epochs needed in v0.1.5 due to FedAvg weight synchronization
-
-2. **Batch size**: Keep ≥32 for stable training with weight aggregation
-
-3. **Workers**: 4 workers is optimal for 2 GPUs (0.5 GPU per worker)
-
-4. **Model Definition** (Optional): Add `dropout_rate` parameter for ensemble diversity:
-   ```python
-   def __init__(self, num_classes=10, dropout_rate=0.15):
-       # HQDE will inject different dropout rates per worker
-   ```
-
-5. **Monitoring**: Look for these indicators of successful v0.1.5 training:
-   - "Weights aggregated and synchronized at epoch X" messages
-   - Learning rate (LR) displayed and gradually decreasing
-   - Loss decreasing smoothly across epochs
-
----
+Do not treat the toy dataset metrics as benchmark evidence.
 
 ## Troubleshooting
 
-### Module Not Found
+### `ModuleNotFoundError: hqde`
+
+Run from the repository root with `PYTHONPATH=.` or install the package:
+
 ```bash
-pip install hqde==0.1.5
-# or
-export PYTHONPATH=.  # from project root
+pip install -e .
 ```
 
-### Ray Issues
+### Ray startup issues
+
+Ray is optional. If Ray is installed but in a bad state:
+
 ```python
 import ray
 ray.shutdown()
-ray.init(ignore_reinit_error=True)
 ```
 
-### CUDA Out of Memory
-- Reduce `batch_size` to 32
-- Reduce `num_workers` to 2
-- Use CPU: set `device = "cpu"`
+Then restart the process.
 
-### v0.1.5 Specific Issues
+### CUDA out of memory
 
-#### Not Seeing Weight Aggregation Messages
-**Problem**: Training runs but no "Weights aggregated and synchronized" messages
+- Reduce batch size.
+- Reduce number of workers.
+- Use `ensemble_mode="fedavg"` with `batch_assignment="split"`.
+- Use a smaller model or shorter sequence length.
 
-**Solution**: 
-1. Verify version: `import hqde; print(hqde.__version__)` should show `0.1.5`
-2. Reinstall: `pip install hqde==0.1.5 --upgrade --force-reinstall`
+### Transformer dict-batch failure
 
-#### Accuracy Not Improving
-**Problem**: Still getting low accuracy even with v0.1.5
+If you see:
 
-**Checklist**:
-- [ ] Using v0.1.5 (check version)
-- [ ] Using 40+ epochs for complex datasets
-- [ ] Seeing "Weights aggregated" messages
-- [ ] Seeing learning rate (LR) displayed
-- [ ] Batch size ≥32
-- [ ] No errors during training
+```text
+ValueError: Training batches must contain at least (data, targets)
+```
 
-#### Training Slower Than Expected
-**Problem**: v0.1.5 training is slower than v0.1.4
-
-**Explanation**: This is expected! Weight aggregation adds overhead, but the accuracy gains (+15-25%) are worth it. Each epoch is slightly slower, but you get much better results.
-
----
+you are passing a dict dataloader into core `HQDESystem`. Use tuple batches, use the standalone notebook worker, or update `HQDESystem` to support dict batches.
 
 ## Documentation
 
-For detailed technical documentation, see:
-- [README.md](README.md) - Overview and API reference
-- [docs/TECHNICAL_DOCUMENTATION.md](docs/TECHNICAL_DOCUMENTATION.md) - Complete technical guide
-- [docs/QUANTUM_ALGORITHMS_DEEP_DIVE.md](docs/QUANTUM_ALGORITHMS_DEEP_DIVE.md) - Quantum-inspired algorithms
-- [docs/DISTRIBUTED_COMPUTING_DEEP_DIVE.md](docs/DISTRIBUTED_COMPUTING_DEEP_DIVE.md) - Distributed architecture
-- [docs/META_LEARNING_AND_QA.md](docs/META_LEARNING_AND_QA.md) - Meta-learning and FAQ
-
----
-
-## Support
-
-- **Issues**: [GitHub Issues](https://github.com/Prathmesh333/HQDE-PyPI/issues)
-- **Repository**: https://github.com/Prathmesh333/HQDE-PyPI
+- [README.md](README.md)
+- [docs/TRANSFORMER_EXTENSION.md](docs/TRANSFORMER_EXTENSION.md)
+- [docs/TECHNICAL_DOCUMENTATION.md](docs/TECHNICAL_DOCUMENTATION.md)
+- [docs/QUANTUM_ALGORITHMS_DEEP_DIVE.md](docs/QUANTUM_ALGORITHMS_DEEP_DIVE.md)
+- [docs/DISTRIBUTED_COMPUTING_DEEP_DIVE.md](docs/DISTRIBUTED_COMPUTING_DEEP_DIVE.md)

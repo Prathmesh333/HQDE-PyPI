@@ -1,520 +1,191 @@
-# HQDE Transformer Extension
+# Transformer Support Status
 
-## Overview
+HQDE includes transformer model classes and text utilities, but full dict-batch transformer support is not yet wired into the core `HQDESystem` training loop.
 
-The HQDE framework now supports **Transformer-based models** for NLP tasks, extending beyond CNNs to enable text classification, sentiment analysis, and specialized applications like **Cognitive Behavioral Therapy (CBT) text classification**.
+This page documents what is implemented now, what works, and what still needs to be completed before transformer support can be described as plug-and-play.
 
-This extension maintains all the core HQDE benefits:
-- **Distributed ensemble learning** with Ray
-- **Quantum-inspired aggregation** for better predictions
-- **Adaptive quantization** for communication efficiency
-- **Byzantine fault tolerance** for robust training
-- **Hierarchical aggregation** for scalability
+## Implemented Components
 
----
+### Model Classes
 
-## Key Features
+Defined in `hqde/models/transformers.py`:
 
-### 1. **Transformer Models**
+| Class | Purpose |
+|-------|---------|
+| `LightweightTransformerClassifier` | Small encoder classifier for fast experiments. |
+| `TransformerTextClassifier` | Standard transformer encoder classifier. |
+| `CBTTransformerClassifier` | CBT-themed classifier with optional domain adapter and emotion head. |
 
-Three transformer architectures are provided:
-
-| Model | Description | Use Case |
-|-------|-------------|----------|
-| `TransformerTextClassifier` | Standard transformer encoder | General text classification |
-| `LightweightTransformerClassifier` | Reduced parameters | Fast training, small datasets |
-| `CBTTransformerClassifier` | Domain-adapted for CBT | Mental health text analysis |
-
-### 2. **Text Data Utilities**
-
-- **SimpleTokenizer**: Word-level tokenization with vocabulary building
-- **TextClassificationDataset**: PyTorch dataset for text classification
-- **CBTDataset**: Specialized dataset for CBT tasks
-- **TextDataLoader**: Optimized data loading for transformers
-
-### 3. **Training Presets**
-
-Pre-configured training settings optimized for transformers:
-
-- `make_transformer_training_config()`: General transformer training
-- `make_cbt_training_config()`: CBT-specific optimization
-- `make_lightweight_transformer_config()`: Fast training
-- `make_large_transformer_config()`: Large model training
-
----
-
-## Architecture Details
-
-### TransformerTextClassifier
+These classes accept:
 
 ```python
-TransformerTextClassifier(
-    vocab_size=30000,          # Vocabulary size
-    num_classes=2,             # Number of output classes
-    d_model=256,               # Model dimension
-    nhead=8,                   # Number of attention heads
-    num_encoder_layers=6,      # Transformer layers
-    dim_feedforward=1024,      # FFN dimension
-    dropout_rate=0.1,          # Dropout rate
-    max_seq_length=512,        # Max sequence length
-    activation="gelu",         # Activation function
-    use_pooling="cls"          # Pooling: "cls", "mean", or "max"
-)
+logits = model(input_ids, attention_mask=None)
 ```
 
-**Key Components:**
-- Token embedding layer
-- Sinusoidal positional encoding
-- Multi-head self-attention (Pre-LN for stability)
-- Feed-forward networks
-- Classification head with dropout
+Direct forward passes with `attention_mask` work.
 
-### CBTTransformerClassifier
+### Text Utilities
 
-Specialized for Cognitive Behavioral Therapy text classification:
+Defined in `hqde/utils/text_data_utils.py`:
 
-```python
-CBTTransformerClassifier(
-    vocab_size=30000,
-    num_classes=10,            # e.g., 10 cognitive distortions
-    d_model=256,
-    nhead=8,
-    num_encoder_layers=4,
-    dim_feedforward=1024,
-    dropout_rate=0.15,         # Higher for ensemble diversity
-    max_seq_length=512,
-    use_domain_adaptation=True # Domain-specific layers
-)
-```
+| Utility | Purpose |
+|---------|---------|
+| `SimpleTokenizer` | Word-level tokenizer for simple experiments. |
+| `TextClassificationDataset` | Dataset returning tokenized dict samples. |
+| `CBTDataset` | CBT-specific dict dataset. |
+| `TextDataLoader` | DataLoader factory with a dict collate function. |
 
-**Special Features:**
-- Domain adaptation layer for CBT context
-- Auxiliary emotion classification head
-- Optimized for mental health text patterns
-- Higher dropout for ensemble diversity
-
----
-
-## Quick Start
-
-### Basic Text Classification
+`TextDataLoader` returns batches like:
 
 ```python
-from hqde import (
-    create_hqde_system,
-    TransformerTextClassifier,
-    SimpleTokenizer,
-    TextClassificationDataset,
-    TextDataLoader,
-    make_transformer_training_config
-)
-
-# 1. Prepare data
-texts = ["This is great!", "This is terrible!", ...]
-labels = [1, 0, ...]  # Positive/Negative
-
-# 2. Build tokenizer
-tokenizer = SimpleTokenizer(vocab_size=10000, max_seq_length=128)
-tokenizer.build_vocab(texts, min_freq=2)
-
-# 3. Create dataset
-dataset = TextClassificationDataset(texts, labels, tokenizer)
-train_loader = TextDataLoader.create_text_loader(dataset, batch_size=32)
-
-# 4. Configure HQDE
-model_kwargs = {
-    'vocab_size': len(tokenizer.word2idx),
-    'num_classes': 2,
-    'd_model': 128,
-    'nhead': 4,
-    'num_encoder_layers': 3
+{
+    "input_ids": tensor,
+    "attention_mask": tensor,
+    "labels": tensor,
 }
-
-training_config = make_transformer_training_config(
-    ensemble_mode='independent',
-    learning_rate=5e-4
-)
-
-# 5. Create HQDE system
-hqde_system = create_hqde_system(
-    model_class=TransformerTextClassifier,
-    model_kwargs=model_kwargs,
-    num_workers=4,
-    training_config=training_config
-)
-
-# 6. Train
-metrics = hqde_system.train(train_loader, num_epochs=10)
-
-# 7. Predict
-predictions = hqde_system.predict(test_loader)
-
-# 8. Cleanup
-hqde_system.cleanup()
 ```
 
----
+### Training Presets
 
-## CBT Text Classification Example
+Defined in `hqde/utils/transformer_presets.py`:
 
-### Cognitive Distortion Detection
+- `make_transformer_training_config`
+- `make_cbt_training_config`
+- `make_lightweight_transformer_config`
+- `make_large_transformer_config`
+
+These return HQDE training dictionaries with transformer-friendly defaults such as AdamW, warmup, label smoothing, gradient clipping, and `federated_normalization="shared"`.
+
+## Current Core Limitation
+
+`HQDESystem.train()` currently expects dataloaders to yield tuple/list batches:
 
 ```python
-from hqde import (
-    create_hqde_system,
-    CBTTransformerClassifier,
-    SimpleTokenizer,
-    CBTDataset,
-    TextDataLoader,
-    make_cbt_training_config
-)
-
-# CBT cognitive distortions (10 classes)
-distortions = [
-    "all_or_nothing",           # 0: Black-and-white thinking
-    "overgeneralization",       # 1: Broad conclusions from single events
-    "mental_filter",            # 2: Focus only on negatives
-    "disqualifying_positive",   # 3: Reject positive experiences
-    "jumping_to_conclusions",   # 4: Mind reading, fortune telling
-    "magnification",            # 5: Catastrophizing or minimizing
-    "emotional_reasoning",      # 6: Feelings as facts
-    "should_statements",        # 7: Rigid rules
-    "labeling",                 # 8: Global labels
-    "personalization"           # 9: Taking responsibility for external events
-]
-
-# Example texts
-texts = [
-    "I always fail at everything I try",           # All-or-nothing
-    "This always happens to me",                   # Overgeneralization
-    "That one mistake ruined everything",          # Mental filter
-    "I feel stupid, so I must be stupid",          # Emotional reasoning
-    "I should be perfect at this",                 # Should statements
-]
-labels = [0, 1, 2, 6, 7]
-
-# Build tokenizer
-tokenizer = SimpleTokenizer(vocab_size=5000, max_seq_length=128)
-tokenizer.build_vocab(texts, min_freq=1)
-
-# Create dataset
-train_dataset = CBTDataset(texts, labels, tokenizer)
-train_loader = TextDataLoader.create_text_loader(train_dataset, batch_size=32)
-
-# Model configuration
-model_kwargs = {
-    'vocab_size': len(tokenizer.word2idx),
-    'num_classes': 10,
-    'd_model': 256,
-    'nhead': 8,
-    'num_encoder_layers': 4,
-    'dropout_rate': 0.15,
-    'use_domain_adaptation': True
-}
-
-# CBT-optimized training config
-training_config = make_cbt_training_config(
-    ensemble_mode='independent',
-    learning_rate=3e-4,
-    warmup_epochs=5,
-    label_smoothing=0.05
-)
-
-# Create HQDE system
-hqde_system = create_hqde_system(
-    model_class=CBTTransformerClassifier,
-    model_kwargs=model_kwargs,
-    num_workers=4,
-    training_config=training_config
-)
-
-# Train
-hqde_system.train(train_loader, num_epochs=20)
-
-# Predict on new text
-new_text = "I'm a complete failure"
-encoded = tokenizer.encode(new_text)
-# ... (create mini loader and predict)
-
-hqde_system.cleanup()
+data, targets = batch[0], batch[1]
 ```
 
----
-
-## Training Configurations
-
-### 1. Standard Transformer Config
+Worker training then calls:
 
 ```python
-config = make_transformer_training_config(
-    ensemble_mode='independent',
-    learning_rate=5e-4,          # Typical for transformers
-    optimizer='adamw',           # AdamW recommended
-    weight_decay=1e-2,           # L2 regularization
-    warmup_epochs=3,             # Warmup for stability
-    label_smoothing=0.1,         # Regularization
-    gradient_clip_norm=1.0,      # Prevent exploding gradients
-    use_amp=True                 # Mixed precision
-)
+outputs = self.model(data_batch)
 ```
 
-### 2. CBT-Specific Config
+That works for CNNs and simple single-tensor models. It does not pass `attention_mask` into transformer models and rejects dict batches returned by `TextDataLoader`.
+
+Observed smoke-test result:
+
+```text
+PASS: direct transformer forward with attention_mask
+PASS: HQDE transformer with tuple-loader workaround
+FAIL: HQDE transformer documented TextDataLoader path
+ValueError: Training batches must contain at least (data, targets)
+```
+
+## Working Usage Today
+
+### Direct Transformer Forward
 
 ```python
-config = make_cbt_training_config(
-    ensemble_mode='independent',
-    learning_rate=3e-4,          # Lower for stability
-    warmup_epochs=5,             # More warmup
-    label_smoothing=0.05,        # Light smoothing
-    dropout_rate=0.15            # Higher for diversity
+import torch
+from hqde.models.transformers import LightweightTransformerClassifier
+
+model = LightweightTransformerClassifier(
+    vocab_size=1000,
+    num_classes=2,
+    d_model=64,
+    nhead=2,
+    num_encoder_layers=1,
 )
+
+input_ids = torch.randint(0, 1000, (4, 32))
+attention_mask = torch.ones(4, 32, dtype=torch.long)
+logits = model(input_ids, attention_mask)
 ```
 
-### 3. Lightweight Config
+### HQDE Tuple-Loader Workaround
+
+This path omits `attention_mask`, so it is suitable only for simple smoke tests where padding effects are acceptable.
 
 ```python
-config = make_lightweight_transformer_config(
-    ensemble_mode='independent',
-    learning_rate=1e-3,          # Higher for small models
-    warmup_epochs=2              # Less warmup needed
+import torch
+from torch.utils.data import DataLoader, TensorDataset
+from hqde import create_hqde_system
+from hqde.models.transformers import LightweightTransformerClassifier
+from hqde.utils.transformer_presets import make_transformer_training_config
+
+input_ids = torch.randint(0, 1000, (32, 64))
+labels = torch.randint(0, 2, (32,))
+loader = DataLoader(TensorDataset(input_ids, labels), batch_size=8)
+
+system = create_hqde_system(
+    model_class=LightweightTransformerClassifier,
+    model_kwargs={
+        "vocab_size": 1000,
+        "num_classes": 2,
+        "d_model": 64,
+        "nhead": 2,
+        "num_encoder_layers": 1,
+        "max_seq_length": 64,
+    },
+    num_workers=2,
+    training_config=make_transformer_training_config(
+        ensemble_mode="independent",
+        use_amp=False,
+    ),
 )
+
+metrics = system.train(loader, num_epochs=1)
+predictions = system.predict(loader)
+system.cleanup()
 ```
 
-### 4. Large Model Config
+### HuggingFace DeBERTa Notebook
+
+Use `examples/cbt_deberta_hqde_kaggle.ipynb` for a masked transformer workflow. That notebook does not rely on `HQDESystem`; it defines a custom worker that explicitly passes:
 
 ```python
-config = make_large_transformer_config(
-    ensemble_mode='fedavg',      # Memory efficient
-    learning_rate=1e-4,          # Lower for large models
-    warmup_epochs=10,            # More warmup
-    gradient_clip_norm=0.5       # Stricter clipping
-)
+logits = model(input_ids, attention_mask)
 ```
 
----
+## What Is Needed for Plug-and-Play Transformer Support
 
-## Model Comparison
+The core framework should add a batch adapter that supports:
 
-| Model | Parameters | Speed | Accuracy | Use Case |
-|-------|-----------|-------|----------|----------|
-| Lightweight | ~500K | Fast | Good | Quick experiments, small datasets |
-| Standard | ~5M | Medium | Better | General text classification |
-| CBT | ~5M | Medium | Best (CBT) | Mental health, domain-specific |
+- `(data, targets)` tuple batches for CNNs and existing models.
+- Dict batches with `input_ids`, `attention_mask`, and `labels`.
+- Optional model kwargs such as `token_type_ids`.
+- Train, evaluate, and predict paths.
+- Ray serialization compatibility.
 
----
-
-## Ensemble Modes for Transformers
-
-### Independent Mode (Recommended)
+The worker call should support both:
 
 ```python
-training_config = make_transformer_training_config(
-    ensemble_mode='independent',
-    batch_assignment='replicate'
-)
+outputs = model(data)
 ```
 
-**Benefits:**
-- Maximum ensemble diversity
-- Each worker trains independently
-- Better generalization
-- Ideal for transformers
-
-### FedAvg Mode
+and:
 
 ```python
-training_config = make_transformer_training_config(
-    ensemble_mode='fedavg',
-    batch_assignment='split'
-)
+outputs = model(**model_inputs)
 ```
 
-**Benefits:**
-- Memory efficient (quantized communication)
-- Epoch-wise weight averaging
-- Good for large models
-- Reduced communication overhead
+Once that is implemented and tested, the examples using `TextDataLoader` can be restored as true plug-and-play examples.
 
----
+## Testing Checklist
 
-## Advanced Features
-
-### 1. Multi-Task Learning (CBT)
-
-```python
-# CBT model with emotion prediction
-model = CBTTransformerClassifier(
-    num_classes=10,              # Cognitive distortions
-    use_domain_adaptation=True
-)
-
-# Forward pass with emotions
-logits, emotion_logits = model(
-    input_ids,
-    attention_mask,
-    return_emotions=True
-)
-```
-
-### 2. Custom Tokenization
-
-For production, use HuggingFace tokenizers:
-
-```python
-from transformers import AutoTokenizer
-
-tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
-
-# Encode
-encoded = tokenizer(
-    texts,
-    padding=True,
-    truncation=True,
-    max_length=512,
-    return_tensors='pt'
-)
-```
-
-### 3. Pooling Strategies
-
-```python
-model = TransformerTextClassifier(
-    use_pooling='cls'    # CLS token (default)
-    # use_pooling='mean'  # Mean pooling
-    # use_pooling='max'   # Max pooling
-)
-```
-
----
-
-## Performance Tips
-
-### 1. **Batch Size**
-- Start with 32 for standard models
-- Reduce to 16 for large models
-- Increase to 64 for lightweight models
-
-### 2. **Sequence Length**
-- 128: Short texts (tweets, sentences)
-- 256: Medium texts (paragraphs)
-- 512: Long texts (documents)
-
-### 3. **Learning Rate**
-- 5e-4: Standard transformers
-- 3e-4: CBT/domain-specific
-- 1e-3: Lightweight models
-- 1e-4: Large models
-
-### 4. **Warmup**
-- 2-3 epochs: Small models
-- 5 epochs: Standard models
-- 10 epochs: Large models
-
-### 5. **Workers**
-- 4 workers: Optimal for most cases
-- 2 workers: Memory-constrained
-- 8 workers: High-end systems
-
----
-
-## Real-World Applications
-
-### 1. **Mental Health**
-- Cognitive distortion detection
-- Therapy session analysis
-- Patient sentiment tracking
-- Intervention recommendation
-
-### 2. **Customer Support**
-- Ticket classification
-- Sentiment analysis
-- Urgency detection
-- Intent recognition
-
-### 3. **Content Moderation**
-- Toxic comment detection
-- Hate speech identification
-- Misinformation flagging
-
-### 4. **Medical**
-- Clinical note classification
-- Symptom extraction
-- Diagnosis prediction
-- Treatment recommendation
-
----
-
-## Example: Complete CBT Pipeline
-
-See `examples/cbt_transformer_example.py` for a complete working example that demonstrates:
-
-1. Data preparation and preprocessing
-2. Tokenizer building
-3. Dataset creation
-4. HQDE system configuration
-5. Ensemble training
-6. Evaluation and prediction
-7. Inference on new examples
-
-Run the example:
+Run:
 
 ```bash
-python examples/cbt_transformer_example.py
+python test_transformer_integration.py
 ```
 
----
+At the time of this documentation update, the package-level transformer pieces pass, while the core dict-batch integration test fails as described above. That failure should be treated as the next implementation task, not hidden in the docs.
 
-## Comparison: CNNs vs Transformers in HQDE
+## Notes for Thesis Writing
 
-| Aspect | CNNs | Transformers |
-|--------|------|--------------|
-| **Input** | Images (32x32, 224x224) | Text sequences (tokens) |
-| **Architecture** | Conv layers + pooling | Self-attention + FFN |
-| **Position** | Implicit (spatial) | Explicit (positional encoding) |
-| **Parallelization** | High | Very high |
-| **Memory** | Lower | Higher |
-| **Training Speed** | Faster | Slower |
-| **Interpretability** | Moderate | High (attention weights) |
-| **Use Cases** | Vision tasks | NLP tasks |
+Use precise language:
 
-**Both benefit equally from HQDE's:**
-- Distributed ensemble learning
-- Quantum-inspired aggregation
-- Adaptive quantization
-- Byzantine fault tolerance
-
----
-
-## Future Enhancements
-
-Planned features for transformer support:
-
-1. **Pre-trained Models**: Integration with HuggingFace models
-2. **Multi-Modal**: Vision-language transformers
-3. **Efficient Attention**: Linear attention, sparse attention
-4. **Knowledge Distillation**: Teacher-student ensembles
-5. **Continual Learning**: Incremental training on new data
-
----
-
-## Citation
-
-If you use HQDE with transformers for CBT or NLP research:
-
-```bibtex
-@software{hqde_transformers2025,
-  title={HQDE: Hierarchical Quantum-Distributed Ensemble Learning with Transformers},
-  author={HQDE Team},
-  year={2025},
-  url={https://github.com/Prathmesh333/HQDE-PyPI}
-}
-```
-
----
-
-## Support
-
-For questions or issues with transformer models:
-- **GitHub Issues**: [Create an issue](https://github.com/Prathmesh333/HQDE-PyPI/issues)
-- **Example Code**: `examples/cbt_transformer_example.py`
-- **Documentation**: This file and `README.md`
+- Correct: "HQDE currently supports CNN-style tuple-batch models through the core training loop."
+- Correct: "Transformer model classes and utilities are included."
+- Correct: "The DeBERTa notebook demonstrates a custom transformer ensemble path."
+- Not correct yet: "Transformers are fully plug-and-play through `HQDESystem` with `TextDataLoader`."

@@ -85,13 +85,9 @@ python -c "import hqde; print(hqde.__version__)"
 
 ---
 
-##  Expected Results
+##  Results Policy
 
-| Dataset | Before | After | Gain |
-|---------|--------|-------|------|
-| CIFAR-10 | ~59% | ~75-80% | +16-21% |
-| SVHN | ~72% | ~85-88% | +13-16% |
-| CIFAR-100 | ~14% | ~45-55% | +31-41% |
+This publishing note no longer lists expected accuracy gains. Run the benchmark scripts on target hardware and publish only measured results with logs, seeds, package versions, and hardware details.
 
 ---
 

@@ -2,6 +2,18 @@
 
 All notable changes to the HQDE project will be documented in this file.
 
+## [0.1.12] - 2026-05-14
+
+### Documentation and Notebook Maintenance
+
+- Updated public README and support docs to describe the current framework behavior.
+- Removed placeholder/fixed expected accuracy claims from public documentation.
+- Documented the current transformer integration status honestly: transformer classes exist, while core dict-batch support is still pending.
+- Updated the CBT DeBERTa Kaggle notebook for dynamic GPU/CPU handling, safe AMP usage, and smoke-test mode.
+- Added notebook and transformer integration validation scripts to the repository.
+
+---
+
 ## [0.1.11] - 2026-03-25
 
 ### Improvements
@@ -45,7 +57,7 @@ v0.1.9 was published to PyPI but from an incomplete commit. v0.1.10 contains the
 
 ### Major API Enhancements - Notebook-Style CIFAR Backbone
 
-This release adds production-ready components from the comprehensive benchmark notebook directly into the package, making it easier to achieve high accuracy on CIFAR-10 and similar datasets.
+This release adds components from the comprehensive benchmark notebook directly into the package. Benchmark impact should be measured from executed runs before being reported.
 
 #### New Features
 
@@ -154,10 +166,9 @@ pip install git+https://github.com/Prathmesh333/HQDE-PyPI.git
 - Aggregating weights destroyed worker diversity and REDUCED accuracy
 
 **User Test Results (v0.1.6 with 40 epochs):**
-- MNIST: 98.70% (expected ~99%)
-- Fashion-MNIST: 89.70% (expected ~91-92%)
-- CIFAR-10: 71.00% (expected ~75-80%) - WORSE than baseline!
-- CIFAR-100: 18.47% (expected ~45-55%) - MUCH WORSE than baseline!
+- Historical notes mentioned local user-run metrics here.
+- Fixed expected ranges have been removed from this changelog.
+- Use saved benchmark artifacts for any formal comparison.
 
 **Root Cause:**
 ```
@@ -202,14 +213,9 @@ FedAvg Approach (WRONG for ensembles):
    - Gradient clipping (max_norm=1.0)
    - Parameter inspection for dropout_rate compatibility
 
-### Expected Performance (v0.1.7 with 40 epochs)
+### Result Reporting
 
-| Dataset | v0.1.6 (broken) | v0.1.7 (fixed) | Improvement |
-|---------|-----------------|----------------|-------------|
-| MNIST | 98.70% | 99.0-99.2% | +0.3-0.5% |
-| Fashion-MNIST | 89.70% | 90-92% | +0.3-2.3% |
-| CIFAR-10 | 71.00% | 75-80% | +4-9% |
-| CIFAR-100 | 18.47% | 35-45% | +16.5-26.5% |
+This changelog no longer lists expected performance ranges. Benchmark results should be generated from executed runs and linked to their raw logs, environment, and commit.
 
 ### Technical Explanation
 
@@ -312,40 +318,34 @@ All v0.1.5 improvements (FedAvg, LR scheduling, gradient clipping) are still act
 - Workers now aggregate and synchronize weights after each epoch (FedAvg style)
 - Previously, workers trained independently without sharing knowledge
 - This was the #1 cause of poor accuracy - workers never communicated during training
-- Expected improvement: +15-20% accuracy on complex datasets
+- Measured impact must be established by benchmark runs.
 
 - **FIX #3: Reduced Dropout for Ensemble Training**
 - Default dropout reduced from 0.5 to 0.15 for ensemble members
 - Dropout is redundant when using ensembles (ensemble itself provides regularization)
 - Each worker now gets a slightly different dropout rate (0.12-0.18) for diversity
-- Expected improvement: +3-5% accuracy
+- Measured impact must be established by benchmark runs.
 
 - **FIX #5: Added Learning Rate Scheduling**
 - Implemented CosineAnnealingLR scheduler for all workers
 - Learning rate decays from initial value to 1e-6 over training
 - Helps models converge better on complex datasets
-- Expected improvement: +2-4% accuracy
+- Measured impact must be established by benchmark runs.
 
 - **FIX #6: Added Ensemble Diversity**
 - Each worker now has different learning rates: [0.001, 0.0008, 0.0012, 0.0009]
 - Each worker has different dropout rates: [0.15, 0.18, 0.12, 0.16]
 - Diversity prevents all workers from making the same mistakes
-- Expected improvement: +2-3% accuracy
+- Measured impact must be established by benchmark runs.
 
 #### Additional Improvements
 - **Gradient Clipping**: Added gradient norm clipping (max_norm=1.0) for training stability
 - **Better Logging**: Added detailed logging for weight aggregation and learning rate changes
 - **Model Kwargs Copying**: Fixed potential mutation issues when creating diverse workers
 
-### Expected Performance Gains
+### Benchmark Reporting
 
-| Dataset | v0.1.4 (5 epochs) | v0.1.5 (40 epochs) | Expected Gain |
-|---------|-------------------|-------------------|---------------|
-| MNIST | ~98% | ~99.2% | +1.2% |
-| Fashion-MNIST | ~87% | ~91-92% | +4-5% |
-| CIFAR-10 | ~59% | ~75-80% | +16-21% |
-| SVHN | ~72% | ~85-88% | +13-16% |
-| CIFAR-100 | ~14% | ~45-55% | +31-41% |
+Expected performance-gain tables were removed. Use measured benchmark artifacts instead.
 
 ### Technical Details
 

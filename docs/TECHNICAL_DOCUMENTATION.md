@@ -1,25 +1,21 @@
-# HQDE: Hierarchical Quantum-Distributed Ensemble Learning
+﻿# HQDE: Hierarchical Quantum-Distributed Ensemble Learning
 
 ## Complete Technical Documentation
 
-**Version:** 0.1.5  
-**Last Updated:** February 2025
+**Version:** 0.1.12
+**Last Updated:** May 2026
 
 This is a comprehensive technical documentation of the HQDE (Hierarchical Quantum-Distributed Ensemble Learning) framework, covering every component with code references.
 
-##  What's New in v0.1.5
+## Current Implementation Notes
 
-**Critical Accuracy Improvements:**
--  **Enabled Weight Aggregation (FedAvg)** - Workers now share knowledge after each epoch
--  **Reduced Dropout to 0.15** - Optimized for ensemble learning with diversity
--  **Added Learning Rate Scheduling** - CosineAnnealingLR for better convergence
--  **Added Ensemble Diversity** - Different LR and dropout per worker
--  **Added Gradient Clipping** - Improved training stability
+- `HQDESystem` supports CNN-style tuple/list batches through the core training loop.
+- `independent` mode trains diverse workers and aggregates predictions at inference time.
+- `fedavg` mode performs epoch-level weight aggregation and can use adaptive delta quantization.
+- Ray is optional; local worker mode is used when Ray is unavailable.
+- Transformer model classes exist, but core dict-batch support is still pending.
 
-**Expected Performance Gains:**
-- CIFAR-10: +16-21% accuracy improvement
-- SVHN: +13-16% accuracy improvement
-- CIFAR-100: +31-41% accuracy improvement
+Performance gains are not stated as fixed values in this document. Generate benchmark numbers from executed scripts or notebooks and save the raw artifacts.
 
 See [CHANGELOG.md](../CHANGELOG.md) for complete details.
 
@@ -42,27 +38,27 @@ See [CHANGELOG.md](../CHANGELOG.md) for complete details.
 
 ## 1. System Architecture Overview
 
-HQDE is a **production-ready framework** that combines three key innovations:
+HQDE is a research framework that combines three implementation areas:
 
 ```
 
-                    HQDE SYSTEM ARCHITECTURE                      
+                    HQDE SYSTEM ARCHITECTURE
 
-                                                                  
-             
-     QUANTUM          DISTRIBUTED           ADAPTIVE       
-    INSPIRED       ENSEMBLE       QUANTIZATION     
-   ALGORITHMS          LEARNING                            
-             
-                                                               
-                                                               
-             
-   Superposition      Ray Workers         4-16 bit         
-   Aggregation        MapReduce           Precision        
-   Entanglement       Hierarchical        Compression      
-   Noise Inject       Aggregation                          
-             
-                                                                  
+
+
+     QUANTUM          DISTRIBUTED           ADAPTIVE
+    INSPIRED       ENSEMBLE       QUANTIZATION
+   ALGORITHMS          LEARNING
+
+
+
+
+   Superposition      Ray Workers         4-16 bit
+   Aggregation        MapReduce           Precision
+   Entanglement       Hierarchical        Compression
+   Noise Inject       Aggregation
+
+
 
 ```
 
@@ -282,7 +278,7 @@ class DistributedEnsembleManager:
                 return loss.item()
 
             def get_weights(self):
-                return {name: param.data.cpu().clone() 
+                return {name: param.data.cpu().clone()
                         for name, param in self.model.named_parameters()}
 
         # Create workers
@@ -325,18 +321,18 @@ class MapReduceEnsembleManager:
 
 ```
   MAP PHASE                    SHUFFLE PHASE                REDUCE PHASE
-                         
- Worker 1                                                          
- Weights  Group by                Aggregate   
-                Parameter     Weights    
- Worker 2                       Name                               
- Weights                             (Mean/      
-               conv1.weight               Weighted)  
- Worker 3                    conv2.weight                          
- Weights   fc1.weight              
-                  ...      
- Worker N                  
- Weights 
+
+ Worker 1
+ Weights  Group by                Aggregate
+                Parameter     Weights
+ Worker 2                       Name
+ Weights                             (Mean/
+               conv1.weight               Weighted)
+ Worker 3                    conv2.weight
+ Weights   fc1.weight
+                  ...
+ Worker N
+ Weights
 
 ```
 
@@ -366,25 +362,25 @@ class HierarchicalAggregator:
 **Tree Structure Example** (8 workers, branching factor 2):
 
 ```
-                    
+
         Level 0        ROOT       (Final aggregated weights)
-                    
-                          
-              
-                                     
-                    
-Level 1   Agg-1                 Agg-2   
-                    
-                                    
-               
-                                         
-                
-L2 Agg-3      Agg-4    Agg-5      Agg-6 
-                
-                                        
-                 
-   W1W2     W3W4    W5W6     W7W8  ← Ensemble Workers
-                 
+
+
+
+
+
+Level 1   Agg-1                 Agg-2
+
+
+
+
+
+L2 Agg-3      Agg-4    Agg-5      Agg-6
+
+
+
+   W1W2     W3W4    W5W6     W7W8  â† Ensemble Workers
+
 ```
 
 **Communication Complexity**: O(log n)
@@ -410,7 +406,7 @@ class ByzantineFaultTolerantAggregator:
             byzantine_scores.append(outlier_score)
 
         # Mark worst ones as Byzantine
-        sorted_indices = sorted(range(num_sources), 
+        sorted_indices = sorted(range(num_sources),
                                key=lambda i: byzantine_scores[i], reverse=True)
         byzantine_indices = sorted_indices[:max_byzantines]
 
@@ -549,7 +545,7 @@ class AdaptiveQuantizer:
         return dequantized, metadata
 ```
 
-**Key concept**: Important weights (high gradients) get 16 bits, unimportant weights get 4 bits → **up to 8x compression**.
+**Key concept**: Important weights (high gradients) get 16 bits, unimportant weights get 4 bits â†’ **up to 8x compression**.
 
 ---
 
@@ -718,7 +714,7 @@ def aggregate_weights(self) -> Dict[str, torch.Tensor]:
     # Aggregate each parameter
     for param_name in param_names:
         param_tensors = [weights[param_name] for weights in all_weights]
-        
+
         # Direct averaging (simple meta-learning)
         stacked_params = torch.stack(param_tensors)
         aggregated_param = stacked_params.mean(dim=0)
@@ -793,68 +789,68 @@ class PerformanceMonitor:
 
 ```
 
-  User creates   
-  HQDESystem       ← create_hqde_system(model_class, num_workers=4)
+  User creates
+  HQDESystem       â† create_hqde_system(model_class, num_workers=4)
 
-         
-         
 
- Initialize Ray    ← ray.init()
- Create Workers    ← @ray.remote class EnsembleWorker
 
-         
-         
 
-                   TRAINING PHASE                             
-                                                              
-  For each epoch:                                             
-    For each batch:                                           
-                 
-      Worker 1  Worker 2  Worker 3  Worker 4         
-       Data 1    Data 2    Data 3    Data 4          
-                 
-                                                          
-                                                          
-      Forward pass → Loss → Backward pass → Update weights   
-                                                              
+ Initialize Ray    â† ray.init()
+ Create Workers    â† @ray.remote class EnsembleWorker
 
-                             
-                             
 
-                   AGGREGATION PHASE                          
-                                                              
-      
-   Collect weights from all workers                         
-   weights = [worker.get_weights() for worker in workers]   
-      
-                                                             
-                                                             
-      
-   Aggregate using chosen method:                           
-   - Simple averaging                                       
-   - Efficiency-weighted                                    
-   - Quantum superposition                                  
-   - Entanglement-based                                     
-      
-                                                              
 
-                             
-                             
 
-                   PREDICTION PHASE                           
-                                                              
-  For each test batch:                                        
-      
-     All workers make predictions in parallel               
-     predictions = [worker.predict(data) for worker]        
-      
-                                                             
-                                                             
-      
-     Ensemble voting: average all predictions               
-     final = torch.stack(predictions).mean(dim=0)           
-      
-                                                              
+                   TRAINING PHASE
+
+  For each epoch:
+    For each batch:
+
+      Worker 1  Worker 2  Worker 3  Worker 4
+       Data 1    Data 2    Data 3    Data 4
+
+
+
+      Forward pass â†’ Loss â†’ Backward pass â†’ Update weights
+
+
+
+
+
+                   AGGREGATION PHASE
+
+
+   Collect weights from all workers
+   weights = [worker.get_weights() for worker in workers]
+
+
+
+
+   Aggregate using chosen method:
+   - Simple averaging
+   - Efficiency-weighted
+   - Quantum superposition
+   - Entanglement-based
+
+
+
+
+
+
+                   PREDICTION PHASE
+
+  For each test batch:
+
+     All workers make predictions in parallel
+     predictions = [worker.predict(data) for worker]
+
+
+
+
+     Ensemble voting: average all predictions
+     final = torch.stack(predictions).mean(dim=0)
+
+
 
 ```
 
@@ -941,7 +937,7 @@ hqde.cleanup()
 
 ## Version Information
 
-- **Package Version**: 0.1.5
+- **Package Version**: 0.1.12
 - **Python**: 3.9+
 - **PyTorch**: 2.8+
 - **Ray**: 2.49+
@@ -950,39 +946,8 @@ hqde.cleanup()
 
 ---
 
-## What's New in v0.1.5
+## Result Reporting
 
-### Critical Accuracy Fixes
+This document describes architecture and implementation. It does not provide benchmark claims. For thesis or paper results, run the benchmark scripts/notebooks on the target hardware and report the observed metrics with full environment details.
 
-1. ** Enabled Weight Aggregation (FedAvg)**
-   - Workers now synchronize weights after each epoch
-   - Previously commented out in v0.1.4 (line 297-300)
-   - Expected improvement: +15-20% accuracy
-
-2. ** Reduced Dropout to 0.15**
-   - Default dropout reduced from 0.5 to 0.15
-   - Each worker gets different dropout (0.12-0.18) for diversity
-   - Expected improvement: +3-5% accuracy
-
-3. ** Added Learning Rate Scheduling**
-   - CosineAnnealingLR scheduler for all workers
-   - LR decays from initial value to 1e-6
-   - Expected improvement: +2-4% accuracy
-
-4. ** Added Ensemble Diversity**
-   - Different LR per worker: [0.001, 0.0008, 0.0012, 0.0009]
-   - Different dropout per worker: [0.15, 0.18, 0.12, 0.16]
-   - Expected improvement: +2-3% accuracy
-
-5. ** Added Gradient Clipping**
-   - Max norm = 1.0 for training stability
-
-### Performance Gains
-
-| Dataset | v0.1.4 (5 epochs) | v0.1.5 (40 epochs) | Improvement |
-|---------|-------------------|-------------------|-------------|
-| CIFAR-10 | ~59% | ~75-80% | +16-21% |
-| SVHN | ~72% | ~85-88% | +13-16% |
-| CIFAR-100 | ~14% | ~45-55% | +31-41% |
-
-See [CHANGELOG.md](../CHANGELOG.md) for complete details.
+See [CHANGELOG.md](../CHANGELOG.md) for release history.

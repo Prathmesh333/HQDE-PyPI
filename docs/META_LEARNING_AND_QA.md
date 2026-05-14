@@ -1,19 +1,11 @@
-# HQDE Deep Dive: Part 3 - Meta-Learning, Quantization & Q&A
+﻿# HQDE Deep Dive: Part 3 - Meta-Learning, Quantization & Q&A
 
-**Version:** 0.1.5  
-**Last Updated:** February 2025
+**Version:** 0.1.12
+**Last Updated:** May 2026
 
-##  What's New in v0.1.5
+## Current Notes
 
-**Meta-Learning Improvements:**
--  **FedAvg Weight Aggregation** - Workers now share knowledge after each epoch (implicit meta-learning)
--  **Ensemble Diversity** - Different LR/dropout per worker creates better meta-learner inputs
--  **Learning Rate Scheduling** - CosineAnnealingLR improves meta-learner convergence
-
-**Expected Performance Gains:**
-- CIFAR-10: +16-21% accuracy improvement
-- SVHN: +13-16% accuracy improvement
-- CIFAR-100: +31-41% accuracy improvement
+HQDE combines worker-level training, prediction aggregation, and optional FedAvg-style synchronization. This document explains those mechanisms. It does not claim fixed performance gains; benchmark numbers must come from executed experiments.
 
 See [CHANGELOG.md](../CHANGELOG.md) for complete details.
 
@@ -46,55 +38,55 @@ class EnsembleWorker:  # Inside each Ray worker
     def train_step(self, data_batch, targets=None):
         """Each worker trains its own model independently."""
         self.model.train()
-        
+
         # Standard PyTorch training
         data_batch = data_batch.to(self.device)
         targets = targets.to(self.device)
-        
+
         self.optimizer.zero_grad()
         outputs = self.model(data_batch)
         loss = self.criterion(outputs, targets)
         loss.backward()
         self.optimizer.step()
-        
+
         # KEY: Update efficiency score (used in aggregation)
         # This is implicit meta-learning!
-        self.efficiency_score = max(0.1, 
+        self.efficiency_score = max(0.1,
             self.efficiency_score * 0.99 +  # 99% keep current
             0.01 * (1.0 / (1.0 + loss.item()))  # 1% update based on loss
         )
 ```
 
-**Location 2: Weight Aggregation (Meta-Learning) - ENHANCED in v0.1.5**
+**Location 2: Weight Aggregation**
 
 [hqde_system.py L234-260](file:///d:/MTech%202nd%20Year/hqde/HQDE-PyPI/hqde/core/hqde_system.py#L234-260)
 
 ```python
 def aggregate_weights(self) -> Dict[str, torch.Tensor]:
     """Aggregate weights from all workers - THIS IS META-LEARNING."""
-    
+
     # Get weights from all workers
     weight_futures = [worker.get_weights.remote() for worker in self.workers]
     efficiency_futures = [worker.get_efficiency_score.remote() for worker in self.workers]
-    
+
     all_weights = ray.get(weight_futures)
     efficiency_scores = ray.get(efficiency_futures)
-    
+
     # Aggregate each parameter
     for param_name in param_names:
         param_tensors = [weights[param_name] for weights in all_weights]
-        
-    # v0.1.5: FedAvg-style averaging (uniform meta-weights)
+
+    # FedAvg-style averaging
         # This enables knowledge sharing across workers
         stacked_params = torch.stack(param_tensors)
         aggregated_param = stacked_params.mean(dim=0)
-        
+
         aggregated_weights[param_name] = aggregated_param
-    
+
     return aggregated_weights
 
 def broadcast_weights(self, aggregated_weights: Dict[str, torch.Tensor]):
-    """v0.1.5: Broadcast aggregated weights back to all workers."""
+    """Broadcast aggregated weights back to all workers."""
     broadcast_futures = []
     for worker in self.workers:
         future = worker.set_weights.remote(aggregated_weights)
@@ -109,14 +101,14 @@ def broadcast_weights(self, aggregated_weights: Dict[str, torch.Tensor]):
 ```python
 def predict(self, data_loader):
     """Make predictions using the trained ensemble."""
-    
+
     for batch in data_loader:
         # Get predictions from ALL workers
         worker_predictions = []
         for worker in self.ensemble_manager.workers:
             batch_prediction = ray.get(worker.predict.remote(data))
             worker_predictions.append(batch_prediction)
-        
+
         # ENSEMBLE VOTING: Average all predictions
         # This is the meta-learner's decision!
         if worker_predictions:
@@ -124,70 +116,70 @@ def predict(self, data_loader):
             predictions.append(ensemble_prediction)
 ```
 
-### Meta-Learning Flow Diagram - UPDATED for v0.1.5
+### Meta-Learning Flow Diagram
 
 ```
 TRAINING PHASE (with FedAvg):
 
-   EPOCH 1:                                                           
-   Data Batch                                                         
-                                                                     
-                                                                     
-                                
-   Worker1 Worker2 Worker3 Worker4  ← Each trains own model  
-    loss1   loss2   loss3   loss4   (different LR/dropout)  
-    LR1     LR2     LR3     LR4                             
-                                
-                                                                  
-                                                                  
-   weights1    wts2      wts3      wts4                              
-                                                                  
-                                       
-                                                                     
-                                                                     
-                                                
-              AGGREGATE (FedAvg)  v0.1.5                         
-              avg_wts = mean()                                      
-                                                
-                                                                     
-                                                                     
-                                                
-              BROADCAST avg_wts   v0.1.5                         
-              to all workers                                        
-                                                
-                                                                     
-   EPOCH 2: (all workers start with synchronized knowledge)          
-                                                                     
-                                
-   Worker1 Worker2 Worker3 Worker4                          
-   avg_wts avg_wts avg_wts avg_wts  ← Same starting point   
-                                
-                                                                      
+   EPOCH 1:
+   Data Batch
+
+
+
+   Worker1 Worker2 Worker3 Worker4  â† Each trains own model
+    loss1   loss2   loss3   loss4   (different LR/dropout)
+    LR1     LR2     LR3     LR4
+
+
+
+   weights1    wts2      wts3      wts4
+
+
+
+
+
+              AGGREGATE (FedAvg)
+              avg_wts = mean()
+
+
+
+
+              BROADCAST avg_wts
+              to all workers
+
+
+   EPOCH 2: (all workers start with synchronized knowledge)
+
+
+   Worker1 Worker2 Worker3 Worker4
+   avg_wts avg_wts avg_wts avg_wts  â† Same starting point
+
+
 
 
 INFERENCE PHASE (Meta-Learning Applied):
 
-                                                                      
-   Test Input                                                         
-                                                                     
-                                                                     
-                                
-   Worker1 Worker2 Worker3 Worker4                          
-    pred1   pred2   pred3   pred4                           
-                                
-                                                                  
-                                       
-                                                                    
-                                                                    
-                                      
-          AGGREGATION (Meta-Learner)                                
-          mean(pred1, pred2, pred3,                                 
-               pred4)                                                
-                                      
-                                                                     
-                                                                     
-               Final Prediction                                       
-                                                                      
+
+   Test Input
+
+
+
+   Worker1 Worker2 Worker3 Worker4
+    pred1   pred2   pred3   pred4
+
+
+
+
+
+
+          AGGREGATION (Meta-Learner)
+          mean(pred1, pred2, pred3,
+               pred4)
+
+
+
+               Final Prediction
+
 
 ```
 
@@ -200,8 +192,8 @@ INFERENCE PHASE (Meta-Learning Applied):
 **File**: [hqde_system.py L35-104](file:///d:/MTech%202nd%20Year/hqde/HQDE-PyPI/hqde/core/hqde_system.py#L35-104)
 
 Neural network weights are typically 32-bit floats. Quantization reduces this:
-- 32-bit → 8-bit: **4x memory reduction**
-- 32-bit → 4-bit: **8x memory reduction**
+- 32-bit â†’ 8-bit: **4x memory reduction**
+- 32-bit â†’ 4-bit: **8x memory reduction**
 
 **Challenge**: Not all weights are equally important!
 
@@ -210,7 +202,7 @@ Neural network weights are typically 32-bit floats. Quantization reduces this:
 ```python
 class AdaptiveQuantizer:
     """Adaptive weight quantization based on real-time importance scoring."""
-    
+
     def __init__(self, base_bits: int = 8, min_bits: int = 4, max_bits: int = 16):
         self.base_bits = base_bits  # Default precision
         self.min_bits = min_bits    # High compression
@@ -222,10 +214,10 @@ class AdaptiveQuantizer:
 ```python
 def compute_importance_score(self, weights, gradients=None):
     """Compute importance scores based on gradient magnitude and weight variance."""
-    
+
     # Weight-based importance: larger weights = more important
     weight_importance = torch.abs(weights)
-    
+
     # Gradient-based importance: larger gradients = actively learning
     if gradients is not None:
         grad_importance = torch.abs(gradients)
@@ -233,7 +225,7 @@ def compute_importance_score(self, weights, gradients=None):
         combined_importance = 0.7 * weight_importance + 0.3 * grad_importance
     else:
         combined_importance = weight_importance
-    
+
     # Normalize to [0, 1]
     min_val = combined_importance.min()
     max_val = combined_importance.max()
@@ -241,7 +233,7 @@ def compute_importance_score(self, weights, gradients=None):
         importance = (combined_importance - min_val) / (max_val - min_val)
     else:
         importance = torch.ones_like(combined_importance) * 0.5
-    
+
     return importance
 ```
 
@@ -254,11 +246,11 @@ Weight importance:  [0.0005, 0.25, 1.0, 0.0015, 0.75]  (normalized)
 Gradient importance: [0.33,  0.03, 0.67, 0.17,   1.0]   (normalized)
 
 Combined (70/30):
-[0.0005×0.7 + 0.33×0.3, ...]
+[0.0005Ã—0.7 + 0.33Ã—0.3, ...]
 = [0.10, 0.18, 0.90, 0.05, 0.83]
 
-High score → More bits (high precision)
-Low score  → Fewer bits (high compression)
+High score â†’ More bits (high precision)
+Low score  â†’ Fewer bits (high compression)
 ```
 
 ### Step 2: Adaptive Bit Allocation
@@ -266,33 +258,33 @@ Low score  → Fewer bits (high compression)
 ```python
 def adaptive_quantize(self, weights, importance_score):
     """Perform adaptive quantization based on importance scores."""
-    
+
     # More important = more bits
     bits_per_param = self.min_bits + (self.max_bits - self.min_bits) * importance_score
-    # importance=0 → 4 bits
-    # importance=1 → 16 bits
-    
+    # importance=0 â†’ 4 bits
+    # importance=1 â†’ 16 bits
+
     bits_per_param = torch.clamp(bits_per_param, self.min_bits, self.max_bits).int()
-    
+
     # For simplicity, use average bits for uniform quantization
     avg_bits = int(bits_per_param.float().mean().item())
-    
+
     # Quantize weights
     weight_min = weights.min()
     weight_max = weights.max()
-    
+
     if weight_max > weight_min:
         # Calculate scale and zero point
         scale = (weight_max - weight_min) / (2**avg_bits - 1)
         zero_point = weight_min
-        
-        # Quantize: continuous → discrete
+
+        # Quantize: continuous â†’ discrete
         quantized = torch.round((weights - zero_point) / scale)
         quantized = torch.clamp(quantized, 0, 2**avg_bits - 1)
-        
-        # Dequantize: discrete → continuous (for use)
+
+        # Dequantize: discrete â†’ continuous (for use)
         dequantized = quantized * scale + zero_point
-    
+
     return dequantized, metadata
 ```
 
@@ -306,17 +298,17 @@ scale = 2.0 / 255 = 0.00784
 zero_point = -0.5
 
 Quantize:
-  -0.5 → round((-0.5 - (-0.5)) / 0.00784) = round(0) = 0
-   0.0 → round((0.0 - (-0.5)) / 0.00784) = round(63.8) = 64
-   0.5 → round((0.5 - (-0.5)) / 0.00784) = round(127.6) = 128
-   1.0 → round((1.0 - (-0.5)) / 0.00784) = round(191.3) = 191
-   1.5 → round((1.5 - (-0.5)) / 0.00784) = round(255) = 255
+  -0.5 â†’ round((-0.5 - (-0.5)) / 0.00784) = round(0) = 0
+   0.0 â†’ round((0.0 - (-0.5)) / 0.00784) = round(63.8) = 64
+   0.5 â†’ round((0.5 - (-0.5)) / 0.00784) = round(127.6) = 128
+   1.0 â†’ round((1.0 - (-0.5)) / 0.00784) = round(191.3) = 191
+   1.5 â†’ round((1.5 - (-0.5)) / 0.00784) = round(255) = 255
 
 Stored as: [0, 64, 128, 191, 255] (8-bit integers)
 
 Dequantize (for use):
-  0 → 0 × 0.00784 + (-0.5) = -0.5
-  64 → 64 × 0.00784 + (-0.5) = 0.002
+  0 â†’ 0 Ã— 0.00784 + (-0.5) = -0.5
+  64 â†’ 64 Ã— 0.00784 + (-0.5) = 0.002
   ...
 
 Error: ~0.002 per value (acceptable for most neural networks)
@@ -332,9 +324,9 @@ metadata = {
     'compression_ratio': 32.0 / avg_bits  # Original is float32
 }
 
-# avg_bits=8  → compression = 4x
-# avg_bits=4  → compression = 8x
-# avg_bits=16 → compression = 2x
+# avg_bits=8  â†’ compression = 4x
+# avg_bits=4  â†’ compression = 8x
+# avg_bits=16 â†’ compression = 2x
 ```
 
 ---
@@ -348,7 +340,7 @@ metadata = {
 ```python
 class SystemMetrics:
     """Container for system performance metrics."""
-    
+
     def __init__(self):
         self.timestamp = time.time()
         self.cpu_percent = 0.0        # CPU utilization
@@ -369,19 +361,19 @@ class SystemMetrics:
 def _collect_system_metrics(self) -> SystemMetrics:
     """Collect current system metrics."""
     metrics = SystemMetrics()
-    
+
     # CPU
     metrics.cpu_percent = psutil.cpu_percent(interval=0.1)
-    
+
     # Memory
     memory = psutil.virtual_memory()
     metrics.memory_percent = memory.percent
     metrics.memory_used_gb = memory.used / (1024**3)
-    
+
     # GPU (PyTorch)
     if torch.cuda.is_available():
         metrics.gpu_memory_used_gb = torch.cuda.memory_allocated() / (1024**3)
-    
+
     return metrics
 ```
 
@@ -434,7 +426,7 @@ def _collect_system_metrics(self) -> SystemMetrics:
 ### Meta-Learning Questions
 
 **Q: Where is the meta-learner trained?**
-> **A:** Implicitly through FedAvg weight aggregation (v0.1.5+) and efficiency scores. Workers share knowledge after each epoch, creating a collaborative meta-learner. See [hqde_system.py L193](file:///d:/MTech%202nd%20Year/hqde/HQDE-PyPI/hqde/core/hqde_system.py#L193)
+> **A:** HQDE does not train a separate meta-model. In `independent` mode it combines worker predictions at inference time. In `fedavg` mode it also aggregates worker model deltas at epoch boundaries.
 
 **Q: How are ensemble predictions combined?**
 > **A:** Simple averaging (mean) of all worker predictions. See [hqde_system.py L407-409](file:///d:/MTech%202nd%20Year/hqde/HQDE-PyPI/hqde/core/hqde_system.py#L407-409)
@@ -442,45 +434,45 @@ def _collect_system_metrics(self) -> SystemMetrics:
 **Q: Is there a separate meta-model?**
 > **A:** No, HQDE uses implicit meta-learning through FedAvg weight aggregation and weighted averaging.
 
-**Q: What changed in v0.1.5 for meta-learning?** 
-> **A:** Workers now synchronize weights after each epoch (FedAvg), enabling knowledge sharing. This is the key meta-learning improvement that boosted accuracy by 15-20%.
+**Q: What changed in the FedAvg path?**
+> **A:** Workers can synchronize weights after each epoch in `fedavg` mode. The measured effect depends on the experiment.
 
 ---
 
 ### Quantization Questions
 
 **Q: What is the quantization range?**
-> **A:** 4-16 bits, default 8 bits. See [hqde_system.py L38-41](file:///d:/MTech%202nd%20Year/hqde/HQDE-PyPI/hqde/core/hqde_system.py#L38-41)
+> **A:** `AdaptiveQuantizer` defaults to base 12 bits, min 8 bits, max 16 bits. These values can be configured.
 
 **Q: How is importance determined?**
 > **A:** 70% weight magnitude + 30% gradient magnitude. See [hqde_system.py L44-67](file:///d:/MTech%202nd%20Year/hqde/HQDE-PyPI/hqde/core/hqde_system.py#L44-67)
 
 **Q: What compression ratio is achieved?**
-> **A:** 4x with 8-bit, up to 8x with 4-bit. See [hqde_system.py L101](file:///d:/MTech%202nd%20Year/hqde/HQDE-PyPI/hqde/core/hqde_system.py#L101)
+> **A:** It depends on the tensors that are quantized or skipped. Use `get_quantization_metrics()` from an actual run.
 
 ---
 
-### v0.1.5 Specific Questions
+### Version and Result Questions
 
-**Q: What's the main improvement in v0.1.5?**
-> **A:** Enabled FedAvg weight aggregation - workers now share knowledge after each epoch instead of training independently. This was the #1 cause of poor accuracy in v0.1.4.
+**Q: What is the current package version?**
+> **A:** The package metadata currently reports 0.1.12.
 
 **Q: How much accuracy improvement can I expect?**
-> **A:** +15-25% on complex datasets (CIFAR-10, SVHN, CIFAR-100) with 40 epochs. Simple datasets (MNIST) see +1-2%.
+> **A:** No fixed improvement should be assumed. Run controlled benchmarks and report measured values.
 
-**Q: Do I need to change my code for v0.1.5?**
-> **A:** No! Just upgrade (`pip install hqde==0.1.5 --upgrade`) and use 40+ epochs for complex datasets. Optionally add `dropout_rate` parameter to your model for ensemble diversity.
+**Q: Do I need to change my model code for HQDE?**
+> **A:** If your model accepts a `dropout_rate` constructor argument, HQDE can vary dropout across workers. Otherwise it will instantiate the model with the provided `model_kwargs`.
 
 **Q: Why do I need 40 epochs now?**
 > **A:** With FedAvg, models need more epochs to fully benefit from knowledge sharing. 10 epochs was enough for independent training, but 40 epochs allows proper convergence with synchronization.
 
-**Q: What's the difference between v0.1.4 and v0.1.5 training?**
-> **A:** 
-> - **v0.1.4**: Workers train independently, never communicate → poor accuracy
-> - **v0.1.5**: Workers aggregate weights after each epoch (FedAvg) → much better accuracy
+**Q: What's the difference between `independent` and `fedavg` training?**
+> **A:**
+> - `independent`: workers train separately and logits are aggregated at prediction time.
+> - `fedavg`: workers train locally and synchronize weights at epoch boundaries.
 
-**Q: How can I verify v0.1.5 is working correctly?**
-> **A:** Look for "Weights aggregated and synchronized at epoch X" messages in training output. Also check that learning rate (LR) is displayed and decreasing.
+**Q: How can I verify FedAvg is active?**
+> **A:** Set `training_config={"ensemble_mode": "fedavg", "batch_assignment": "split"}` and inspect epoch metrics plus quantization or aggregation state after training.
 
 ---
 

@@ -1,531 +1,236 @@
 # HQDE - Hierarchical Quantum-Distributed Ensemble Learning
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
-[![PyTorch](https://img.shields.io/badge/PyTorch-2.8+-red.svg)](https://pytorch.org/)
-[![Ray](https://img.shields.io/badge/Ray-2.49+-green.svg)](https://ray.io/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.x-red.svg)](https://pytorch.org/)
+[![Ray](https://img.shields.io/badge/Ray-optional-green.svg)](https://ray.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.1.5-brightgreen.svg)](https://pypi.org/project/hqde/)
+[![Version](https://img.shields.io/badge/version-0.1.12-brightgreen.svg)](https://pypi.org/project/hqde/)
 
-A production-ready framework for distributed ensemble learning with quantum-inspired algorithms and adaptive quantization.
+HQDE is a PyTorch research framework for scalable ensemble learning. It provides a common training API for multiple model replicas, optional Ray-backed workers, epoch-level FedAvg-style synchronization, adaptive delta quantization, and quantum-inspired aggregation utilities.
 
-HQDE combines quantum-inspired algorithms with distributed computing to deliver superior machine learning performance with significantly reduced memory usage and training time.
+The project is intended for experimentation and thesis research. Reported accuracy, runtime, and memory numbers should come from your own executed benchmark logs or notebooks; this README does not claim fixed benchmark results.
 
+## What Works Today
 
-## Table of Contents
-
-- [Key Features](#key-features)
-- [Installation](#installation)
-- [Quick Start](#quick-start)
-- [Transformer Support (NEW)](#transformer-support-new)
-- [Architecture Overview](#architecture-overview)
-- [Quantum-Inspired Algorithms](#quantum-inspired-algorithms)
-- [Distributed Computing](#distributed-computing)
-- [Adaptive Quantization](#adaptive-quantization)
-- [Configuration](#configuration)
-- [API Reference](#api-reference)
-- [Performance Benchmarks](#performance-benchmarks)
-- [Documentation](#documentation)
-
----
-
-## Key Features
-
-| Feature | Description |
-|---------|-------------|
-| **Up to 17x Faster Training** | Ray-based stateful actors with zero-copy data sharing |
-| **4x Memory Reduction** | Adaptive 4-16 bit quantization based on weight importance |
-| **FedAvg Weight Aggregation** | Workers share knowledge after each epoch for better accuracy |
-| **Ensemble Diversity** | Different learning rates and dropout per worker |
-| **Production-Ready** | Byzantine fault tolerance and dynamic load balancing |
-| **Quantum-Inspired** | Superposition aggregation, entanglement simulation, QUBO optimization |
-| **Distributed** | Ray-based MapReduce with O(log n) hierarchical aggregation |
-
----
+| Area | Current status |
+|------|----------------|
+| Vision/CNN models | Supported through `HQDESystem` with standard `(data, target)` PyTorch dataloaders. |
+| Ensemble training | `independent` mode for diverse workers, `fedavg` mode for epoch-level weight averaging. |
+| Prediction aggregation | Mean or efficiency-weighted logit aggregation across workers. |
+| Quantized communication | Available during `fedavg` aggregation through `AdaptiveQuantizer`. |
+| Ray execution | Used when Ray is installed and available; otherwise HQDE falls back to local workers. |
+| Transformer modules | Built-in transformer model classes and text utilities exist. Core `HQDESystem` currently expects tensor or tuple batches, not dict batches. |
+| DeBERTa CBT notebook | Standalone Kaggle notebook with custom worker code that handles `input_ids`, `attention_mask`, and `labels`. |
 
 ## Installation
 
-### From PyPI (Recommended)
+From PyPI:
+
 ```bash
 pip install hqde
 ```
 
-### From Source
+From source:
+
 ```bash
 git clone https://github.com/Prathmesh333/HQDE-PyPI.git
 cd HQDE-PyPI
 pip install -e .
 ```
 
----
+For development tests, install the dev extras or install pytest separately:
 
-## Quick Start
+```bash
+pip install -e ".[dev]"
+```
+
+## Quick Start: Vision Ensemble
 
 ```python
 from hqde import SmallImageResNet18, create_hqde_system, make_cifar_training_config
 
 training_config = make_cifar_training_config(
-    ensemble_mode='independent',
-    batch_assignment='replicate',
-    prediction_aggregation='mean',
+    ensemble_mode="independent",
+    batch_assignment="replicate",
+    prediction_aggregation="mean",
+    use_amp=True,
 )
 
 hqde_system = create_hqde_system(
     model_class=SmallImageResNet18,
-    model_kwargs={'num_classes': 10},
+    model_kwargs={"num_classes": 10},
     num_workers=4,
     training_config=training_config,
 )
 
-# Train the ensemble and collect validation metrics each epoch
-metrics = hqde_system.train(train_loader, num_epochs=20, validation_loader=test_loader)
+metrics = hqde_system.train(
+    train_loader,
+    num_epochs=20,
+    validation_loader=test_loader,
+)
 
-# Make predictions (ensemble voting)
-predictions = hqde_system.predict(test_loader)
-
-# Evaluate the ensemble directly
 eval_metrics = hqde_system.evaluate(test_loader)
-
-# Cleanup resources
-hqde_system.cleanup()
-```
-
-**Legacy fedavg-style output example:**
-```
-Epoch 1/40, Average Loss: 2.3045, LR: 0.001000
-  → Weights aggregated and synchronized at epoch 1  
-Epoch 2/40, Average Loss: 1.8234, LR: 0.000998
-  → Weights aggregated and synchronized at epoch 2  
-```
-
-**Examples:**
-```bash
-python examples/quick_start.py           # Quick demo
-python examples/cifar10_synthetic_test.py # CIFAR-10 benchmark
-python examples/cifar10_test.py          # Real CIFAR-10 dataset
-```
-
-Current releases log epoch loss, accuracy, and learning rate directly. In `independent + replicate` mode there is no epoch-end synchronization message because workers stay diverse until inference time.
-
----
-
-## Transformer Support (NEW)
-
-HQDE now supports **Transformer-based models** for NLP tasks! 🎉
-
-### Text Classification with Transformers
-
-```python
-from hqde import (
-    create_hqde_system,
-    CBTTransformerClassifier,
-    SimpleTokenizer,
-    CBTDataset,
-    TextDataLoader,
-    make_cbt_training_config
-)
-
-# Prepare text data
-texts = ["I always fail at everything", "This always happens to me"]
-labels = [0, 1]  # Cognitive distortion types
-
-# Build tokenizer
-tokenizer = SimpleTokenizer(vocab_size=5000, max_seq_length=128)
-tokenizer.build_vocab(texts, min_freq=1)
-
-# Create dataset
-dataset = CBTDataset(texts, labels, tokenizer)
-loader = TextDataLoader.create_text_loader(dataset, batch_size=32)
-
-# Configure HQDE for transformers
-model_kwargs = {
-    'vocab_size': len(tokenizer.word2idx),
-    'num_classes': 10,
-    'd_model': 256,
-    'nhead': 8,
-    'num_encoder_layers': 4
-}
-
-training_config = make_cbt_training_config(
-    ensemble_mode='independent',
-    learning_rate=3e-4
-)
-
-# Create HQDE system with transformer
-hqde_system = create_hqde_system(
-    model_class=CBTTransformerClassifier,
-    model_kwargs=model_kwargs,
-    num_workers=4,
-    training_config=training_config
-)
-
-# Train and predict
-hqde_system.train(loader, num_epochs=20)
 predictions = hqde_system.predict(test_loader)
 hqde_system.cleanup()
 ```
 
-### Available Transformer Models
+The dataloader must yield either `(data, targets)` or a compatible list/tuple. Current core training does not consume dict batches.
 
-| Model | Description | Use Case |
-|-------|-------------|----------|
-| `TransformerTextClassifier` | Standard transformer encoder | General text classification |
-| `LightweightTransformerClassifier` | Reduced parameters | Fast training, small datasets |
-| `CBTTransformerClassifier` | Domain-adapted for CBT | Mental health text analysis |
+## Training Modes
 
-### Applications
-
-- **Cognitive Behavioral Therapy (CBT)**: Classify cognitive distortions in therapy notes
-- **Sentiment Analysis**: Customer reviews, social media
-- **Content Moderation**: Toxic comment detection
-- **Medical NLP**: Clinical note classification
-
-### Documentation
-
-- **Full Guide**: [docs/TRANSFORMER_EXTENSION.md](docs/TRANSFORMER_EXTENSION.md)
-- **CBT Example**: [examples/CBT_CLASSIFICATION_README.md](examples/CBT_CLASSIFICATION_README.md)
-- **Code Example**: [examples/cbt_transformer_example.py](examples/cbt_transformer_example.py)
-
-### Training Modes
-
-Use `training_config` to choose the training behavior that matches your workload:
-
-```python
-# True ensemble: preserve diversity, aggregate only at inference
-training_config = {
-    'ensemble_mode': 'independent',
-    'batch_assignment': 'replicate',
-}
-
-# Epoch-wise FedAvg/local-SGD style training
-training_config = {
-    'ensemble_mode': 'fedavg',
-    'batch_assignment': 'split',
-}
-```
-
-`batch_assignment='split'` is not PyTorch DDP. Each worker trains locally during the epoch, and weights are averaged only at the epoch boundary when `ensemble_mode='fedavg'`.
-
-### Training Config Notes
+### Independent Ensemble
 
 ```python
 training_config = {
-    'ensemble_mode': 'independent',
-    'batch_assignment': 'replicate',
-    'optimizer': 'sgd',
-    'learning_rate': 0.1,
-    'weight_decay': 5e-4,
-    'use_amp': True,
-    'label_smoothing': 0.1,
-    'warmup_epochs': 5,
-    'warmup_start_factor': 0.2,
-    'compile_model': False,
-    'compile_mode': 'default',
-    'prediction_aggregation': 'mean',
+    "ensemble_mode": "independent",
+    "batch_assignment": "replicate",
+    "prediction_aggregation": "mean",
 }
 ```
 
-- Use `independent + replicate` for true ensemble training.
-- Use `fedavg + split` for epoch-wise averaging with lower memory pressure.
-- `use_amp` activates mixed precision only on CUDA devices.
-- `quantization_config` is only applied in `fedavg` mode during weight aggregation.
+Each worker receives the same batch and trains its own model copy. Workers remain diverse during training, and predictions are aggregated at inference time.
 
----
+### FedAvg-Style Epoch Aggregation
 
-## Architecture Overview
-
+```python
+training_config = {
+    "ensemble_mode": "fedavg",
+    "batch_assignment": "split",
+    "training_aggregation": "sample_weighted",
+    "server_optimizer": "fedadam",
+    "federated_normalization": "local_bn",
+}
 ```
 
-                    HQDE SYSTEM ARCHITECTURE                      
+Each batch is split across workers. At the end of each epoch, HQDE aggregates model deltas and broadcasts the server state back to workers. This is local-SGD/FedAvg-style training, not PyTorch DDP.
 
-                                                                  
-             
-     QUANTUM          DISTRIBUTED           ADAPTIVE       
-    INSPIRED       ENSEMBLE       QUANTIZATION     
-   ALGORITHMS          LEARNING                            
-             
-                                                                  
+## Quantization
 
+Quantization is applied to model deltas during `fedavg` aggregation when a `quantization_config` is supplied.
+
+```python
+quantization_config = {
+    "base_bits": 12,
+    "min_bits": 8,
+    "max_bits": 16,
+    "block_size": 1024,
+    "warmup_rounds": 5,
+    "skip_bias": True,
+    "skip_norm": True,
+    "error_feedback": True,
+}
 ```
 
-### Project Structure
+Small tensors, bias tensors, normalization tensors, and non-floating tensors are skipped by default. Compression ratios depend on model size, selected bit widths, and how many tensors are skipped.
 
-```
+## Transformer Status
+
+HQDE ships these transformer classes:
+
+| Model | File | Purpose |
+|-------|------|---------|
+| `LightweightTransformerClassifier` | `hqde/models/transformers.py` | Small text-classification experiments. |
+| `TransformerTextClassifier` | `hqde/models/transformers.py` | General encoder-based text classification. |
+| `CBTTransformerClassifier` | `hqde/models/transformers.py` | CBT-themed classifier with optional domain adapter. |
+
+Important current limitation:
+
+- `TextDataLoader` returns dict batches with `input_ids`, `attention_mask`, and `labels`.
+- `HQDESystem.train()` currently expects tuple/list batches and calls models as `model(data)`.
+- Therefore the documented dict-batch text utility path is not yet fully plug-and-play with core `HQDESystem`.
+
+Working options today:
+
+1. Use the transformer classes directly outside `HQDESystem`.
+2. Use tuple-style dataloaders such as `(input_ids, labels)` for simple built-in transformer experiments where `attention_mask` can be omitted.
+3. Use the DeBERTa Kaggle notebook for masked HuggingFace-style transformer training; it has custom worker code for dict batches.
+4. Add dict-batch support to `HQDESystem` before presenting transformer support as fully plug-and-play.
+
+See [docs/TRANSFORMER_EXTENSION.md](docs/TRANSFORMER_EXTENSION.md) for details.
+
+## Kaggle DeBERTa CBT Notebook
+
+The notebook [examples/cbt_deberta_hqde_kaggle.ipynb](examples/cbt_deberta_hqde_kaggle.ipynb) is a standalone demonstration for CBT cognitive-distortion classification using DeBERTa workers.
+
+It now supports:
+
+- 2x T4 Kaggle GPU execution.
+- Single-GPU and CPU smoke-test execution.
+- Dynamic device selection instead of hard-coded `cuda:0` and `cuda:1`.
+- Safe AMP usage only on CUDA.
+- `HQDE_QUICK_TEST=1` for short smoke runs.
+
+The notebook uses a generated 100-sample toy dataset. Treat its metrics as demonstration output, not clinical evidence or a benchmark.
+
+## Project Layout
+
+```text
 hqde/
- core/
-    hqde_system.py           # Main system, workers, quantization
- quantum/
-    quantum_aggregator.py    # Superposition and entanglement
-    quantum_noise.py         # Quantum noise generation
-    quantum_optimization.py  # QUBO and quantum annealing
- distributed/
-    mapreduce_ensemble.py      # MapReduce pattern
-    hierarchical_aggregator.py # Tree aggregation
-    fault_tolerance.py         # Byzantine fault tolerance
-    load_balancer.py           # Dynamic load balancing
- utils/
-     performance_monitor.py     # System monitoring
+  core/
+    hqde_system.py              # HQDESystem, workers, FedAvg, quantization
+  models/
+    vision.py                   # SmallImageResNet18
+    transformers.py             # Built-in transformer classifiers
+  quantum/
+    quantum_aggregator.py       # Quantum-inspired aggregation utilities
+    quantum_noise.py
+    quantum_optimization.py
+  distributed/
+    mapreduce_ensemble.py
+    hierarchical_aggregator.py
+    fault_tolerance.py
+    load_balancer.py
+  utils/
+    data_utils.py
+    text_data_utils.py
+    training_presets.py
+    transformer_presets.py
+    performance_monitor.py
 ```
 
----
+## Common Commands
 
-## Quantum-Inspired Algorithms
-
-**Note:** HQDE uses quantum-inspired algorithms on classical hardware, not actual quantum computers.
-
-### Quantum Superposition Aggregation
-
-Combines ensemble predictions using quantum amplitude-like weights:
-
-```python
-# Confidence scores converted to quantum amplitudes
-amplitudes = sqrt(softmax(confidence_scores))
-
-# Superposition combination
-superposition = sum(amplitude_i * prediction_i)
+```bash
+python examples/quick_start.py
+python test_imports.py
+python test_transformer_integration.py
+python validate_notebook.py
 ```
 
-**Location:** `hqde/quantum/quantum_aggregator.py`
+If pytest is installed:
 
-### Entanglement-Based Correlation
-
-Models correlations between ensemble members using an entanglement matrix:
-
-```python
-# Symmetric entanglement matrix
-entanglement_matrix[i,j] = correlation(model_i, model_j) * strength
-
-# Weight models by their entanglement with others
-entangled_weights = softmax(cosine_similarity @ entanglement_matrix)
+```bash
+python -m pytest -q
 ```
-
-**Location:** `hqde/quantum/quantum_aggregator.py`
-
-### Quantum Annealing Optimization
-
-Uses QUBO (Quadratic Unconstrained Binary Optimization) for ensemble selection:
-
-```python
-# QUBO formulation for selecting optimal models
-qubo_matrix = formulate_qubo(candidate_models, constraints)
-
-# Solve using simulated quantum annealing
-solution = quantum_annealing_solve(qubo_matrix)
-```
-
-**Location:** `hqde/quantum/quantum_optimization.py`
-
----
-
-## Distributed Computing
-
-HQDE uses Ray for distributed computing with several patterns:
-
-### Ray Worker Architecture
-
-```python
-# GPUs are automatically divided among workers
-@ray.remote(num_gpus=gpu_per_worker)
-class EnsembleWorker:
-    def train_step(self, data_batch, targets):
-        # Each worker trains its own model copy
-        ...
-```
-
-### MapReduce Weight Aggregation
-
-```
-MAP      →    SHUFFLE    →    REDUCE
-Workers       Group by        Aggregate
-weights       parameter       weights
-              name
-```
-
-**Location:** `hqde/distributed/mapreduce_ensemble.py`
-
-### Hierarchical Tree Aggregation
-
-Communication Complexity: **O(log n)**
-
-```
-Level 0 (Root):           [AGG]
-                         /     \
-Level 1:            [AGG]       [AGG]
-                   /    \       /    \
-Level 2:        [W1]  [W2]   [W3]  [W4]
-```
-
-**Location:** `hqde/distributed/hierarchical_aggregator.py`
-
-### Byzantine Fault Tolerance
-
-Tolerates up to 33% faulty or malicious workers:
-
-- **Outlier Detection:** Median Absolute Deviation (MAD)
-- **Robust Aggregation:** Geometric median
-- **Reliability Tracking:** Source reputation scores
-
-**Location:** `hqde/distributed/fault_tolerance.py`
-
-### Dynamic Load Balancing
-
-Multi-factor node selection scoring:
-- 40% success rate
-- 30% current load
-- 20% execution speed
-- 10% capability match
-
-**Location:** `hqde/distributed/load_balancer.py`
-
----
-
-## Adaptive Quantization
-
-Dynamically adjusts precision based on weight importance:
-
-| Weight Importance | Bits | Compression |
-|------------------|------|-------------|
-| High (critical)  | 16   | 2x |
-| Medium (default) | 8    | 4x |
-| Low (redundant)  | 4    | 8x |
-
-**Importance Score = 70% × |weight| + 30% × |gradient|**
-
-```python
-quantization_config = {
-    'base_bits': 8,   # Default precision
-    'min_bits': 4,    # High compression for unimportant weights
-    'max_bits': 16    # High precision for critical weights
-}
-```
-
-**Location:** `hqde/core/hqde_system.py`
-
----
-
-## Configuration
-
-### Full Configuration Example
-
-```python
-from hqde import create_hqde_system
-
-# Quantization settings
-quantization_config = {
-    'base_bits': 8,
-    'min_bits': 4,
-    'max_bits': 16
-}
-
-# Quantum aggregation settings
-aggregation_config = {
-    'noise_scale': 0.005,
-    'exploration_factor': 0.1,
-    'entanglement_strength': 0.1
-}
-
-# Create system
-hqde_system = create_hqde_system(
-    model_class=YourModel,
-    model_kwargs={'num_classes': 10},
-    num_workers=8,
-    quantization_config=quantization_config,
-    aggregation_config=aggregation_config
-)
-```
-
----
-
-## API Reference
-
-### Core Classes
-
-| Class | Description | Location |
-|-------|-------------|----------|
-| `HQDESystem` | Main entry point | `hqde/core/hqde_system.py` |
-| `DistributedEnsembleManager` | Manages Ray workers | `hqde/core/hqde_system.py` |
-| `AdaptiveQuantizer` | Weight compression | `hqde/core/hqde_system.py` |
-
-### Quantum Classes
-
-| Class | Description | Location |
-|-------|-------------|----------|
-| `QuantumEnsembleAggregator` | Superposition/entanglement aggregation | `hqde/quantum/quantum_aggregator.py` |
-| `QuantumNoiseGenerator` | Exploration noise | `hqde/quantum/quantum_noise.py` |
-| `QuantumEnsembleOptimizer` | QUBO-based selection | `hqde/quantum/quantum_optimization.py` |
-
-### Distributed Classes
-
-| Class | Description | Location |
-|-------|-------------|----------|
-| `MapReduceEnsembleManager` | MapReduce pattern | `hqde/distributed/mapreduce_ensemble.py` |
-| `HierarchicalAggregator` | Tree aggregation | `hqde/distributed/hierarchical_aggregator.py` |
-| `ByzantineFaultTolerantAggregator` | Fault tolerance | `hqde/distributed/fault_tolerance.py` |
-| `DynamicLoadBalancer` | Work distribution | `hqde/distributed/load_balancer.py` |
-
-### Factory Function
-
-```python
-def create_hqde_system(
-    model_class,           # PyTorch model class
-    model_kwargs,          # Model initialization parameters
-    num_workers=4,         # Number of distributed workers
-    quantization_config=None,
-    aggregation_config=None
-) -> HQDESystem
-```
-
----
-
-## Performance Benchmarks
-
-| Metric | Traditional Ensemble | HQDE | Improvement |
-|--------|---------------------|------|-------------|
-| Memory Usage | 2.4 GB | 0.6 GB | 4x reduction |
-| Training Time | 45 min | 12 min | 3.75x faster |
-| Communication | 800 MB | 100 MB | 8x less data |
-| Test Accuracy | 91.2% | 93.7% | +2.5% |
-
----
 
 ## Documentation
 
-- [HOW_TO_RUN.md](HOW_TO_RUN.md) - Detailed setup and usage guide
-- [docs/](docs/) - Technical documentation
-- [examples/](examples/) - Working code examples
+- [HOW_TO_RUN.md](HOW_TO_RUN.md) - Installation and usage guide.
+- [docs/TECHNICAL_DOCUMENTATION.md](docs/TECHNICAL_DOCUMENTATION.md) - Technical architecture notes.
+- [docs/TRANSFORMER_EXTENSION.md](docs/TRANSFORMER_EXTENSION.md) - Transformer support status and usage.
+- [README_KAGGLE_NOTEBOOKS.md](README_KAGGLE_NOTEBOOKS.md) - Kaggle notebook overview.
+- [QUICK_START_KAGGLE.md](QUICK_START_KAGGLE.md) - Kaggle notebook run instructions.
 
----
+## Results Policy
 
-## Contributing
+Do not cite placeholder accuracy, runtime, memory, or compression numbers as thesis results. For thesis reporting:
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/new-feature`)
-3. Commit your changes (`git commit -m 'Add new feature'`)
-4. Push to the branch (`git push origin feature/new-feature`)
-5. Open a Pull Request
-
----
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
----
+1. Run the exact script or notebook.
+2. Save the command, hardware, seed, package versions, and output files.
+3. Report mean and variance across repeated runs where possible.
+4. Distinguish synthetic toy data from real datasets.
 
 ## Citation
 
 ```bibtex
-@software{hqde2025,
+@software{hqde2026,
   title={HQDE: Hierarchical Quantum-Distributed Ensemble Learning},
   author={Prathamesh Nikam},
-  year={2025},
+  year={2026},
   url={https://github.com/Prathmesh333/HQDE-PyPI}
 }
 ```
 
----
+## License
 
-## Support
-
-- **Bug Reports:** [Create an issue](https://github.com/Prathmesh333/HQDE-PyPI/issues)
-- **Feature Requests:** [Create an issue](https://github.com/Prathmesh333/HQDE-PyPI/issues)
-- **Questions:** [Start a discussion](https://github.com/Prathmesh333/HQDE-PyPI/issues)
+MIT License. See [LICENSE](LICENSE).
