@@ -20,7 +20,7 @@ The project is intended for experimentation and thesis research. Reported accura
 | Quantized communication | Available during `fedavg` aggregation through `AdaptiveQuantizer`. |
 | Ray execution | Used when Ray is installed and available; otherwise HQDE falls back to local workers. |
 | Transformer modules | Built-in transformer model classes and text utilities exist. Core `HQDESystem` currently expects tensor or tuple batches, not dict batches. |
-| DeBERTa CBT notebook | Standalone Kaggle notebook with custom worker code that handles `input_ids`, `attention_mask`, and `labels`. |
+| DeBERTa CBT notebooks | Standalone Kaggle notebooks with custom dict-batch workers; the multi-dataset 2xT4 benchmark uses Ray actors. |
 
 ## Installation
 
@@ -42,6 +42,12 @@ For development tests, install the dev extras or install pytest separately:
 
 ```bash
 pip install -e ".[dev]"
+```
+
+For Ray-backed benchmark execution:
+
+```bash
+pip install "ray>=2.9.0"
 ```
 
 ## Quick Start: Vision Ensemble
@@ -143,7 +149,7 @@ Working options today:
 
 1. Use the transformer classes directly outside `HQDESystem`.
 2. Use tuple-style dataloaders such as `(input_ids, labels)` for simple built-in transformer experiments where `attention_mask` can be omitted.
-3. Use the DeBERTa Kaggle notebook for masked HuggingFace-style transformer training; it has custom worker code for dict batches.
+3. Use the DeBERTa Kaggle notebooks for masked HuggingFace-style transformer training; they have custom worker code for dict batches, and the multi-dataset 2xT4 benchmark supports Ray actors.
 4. Add dict-batch support to `HQDESystem` before presenting transformer support as fully plug-and-play.
 
 See [docs/TRANSFORMER_EXTENSION.md](docs/TRANSFORMER_EXTENSION.md) for details.
@@ -168,7 +174,7 @@ The notebook keeps a synthetic fallback for offline smoke tests via `HQDE_DATASE
 
 For thesis and paper tables, use [examples/cbt_multi_dataset_comparison.py](examples/cbt_multi_dataset_comparison.py). It runs the same DeBERTa-based HQDE-style ensemble protocol across multiple Hugging Face cognitive-distortion datasets and exports CSV, JSON, and Markdown tables.
 
-A Kaggle-ready 2xT4 notebook is available at [examples/cbt_multi_dataset_hqde_kaggle_2xT4.ipynb](examples/cbt_multi_dataset_hqde_kaggle_2xT4.ipynb). It configures 4 HQDE ensemble workers, downloads the benchmark runner, performs a dry-run split check, then runs the full comparison. The runner pre-tokenizes each split once and trains workers in one-worker-per-GPU waves to use both T4s.
+A Kaggle-ready 2xT4 notebook is available at [examples/cbt_multi_dataset_hqde_kaggle_2xT4.ipynb](examples/cbt_multi_dataset_hqde_kaggle_2xT4.ipynb). It configures 4 HQDE ensemble workers as Ray actors, requests `num_gpus=0.25` and one CPU per actor, downloads the benchmark runner, performs a dry-run split check, then runs the full comparison. The runner pre-tokenizes each split once, trains actors concurrently, and aggregates worker logits on the coordinator for validation/test metrics.
 
 Default dataset keys:
 
@@ -185,7 +191,7 @@ python examples/cbt_multi_dataset_comparison.py --quick-test --dry-run
 Full canonical 10-label run example:
 
 ```bash
-python examples/cbt_multi_dataset_comparison.py --label-mode canonical10 --epochs 5 --max-train-samples 1000 --max-eval-samples 300
+python examples/cbt_multi_dataset_comparison.py --backend ray --ray-gpus-per-worker 0.25 --label-mode canonical10 --epochs 5 --max-train-samples 1000 --max-eval-samples 300
 ```
 
 See [examples/CBT_MULTI_DATASET_BENCHMARK.md](examples/CBT_MULTI_DATASET_BENCHMARK.md) for reporting guidance.

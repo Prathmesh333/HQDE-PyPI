@@ -3,8 +3,10 @@ Multi-dataset CBT cognitive-distortion benchmark for HQDE-style DeBERTa ensemble
 
 This script is intended for thesis/paper result generation. It runs the same
 training protocol across multiple Hugging Face datasets and writes comparison
-tables to disk. It does not claim fixed results; report only metrics generated
-from your own run logs.
+tables to disk. It supports a local fallback backend and a Ray actor backend
+that matches HQDE's coordinator -> distributed worker -> aggregation hierarchy.
+It does not claim fixed results; report only metrics generated from your own
+run logs.
 
 Default datasets:
 - danthareja/cognitive-distortion
@@ -42,6 +44,14 @@ from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
 from transformers import AutoConfig, AutoModel, AutoTokenizer, get_cosine_schedule_with_warmup
+
+try:
+    import ray
+
+    RAY_AVAILABLE = True
+except ImportError:  # pragma: no cover - optional dependency
+    ray = None
+    RAY_AVAILABLE = False
 
 try:
     from torch.amp import GradScaler, autocast
@@ -131,6 +141,31 @@ class TextClassificationDataset(Dataset):
             "attention_mask": self.attention_mask[idx],
             "labels": self.labels[idx],
         }
+
+
+class TensorTextDataset(Dataset):
+    def __init__(self, payload: dict[str, torch.Tensor]):
+        self.input_ids = payload["input_ids"]
+        self.attention_mask = payload["attention_mask"]
+        self.labels = payload["labels"]
+
+    def __len__(self) -> int:
+        return int(self.labels.size(0))
+
+    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
+        return {
+            "input_ids": self.input_ids[idx],
+            "attention_mask": self.attention_mask[idx],
+            "labels": self.labels[idx],
+        }
+
+
+def dataset_payload(dataset: Dataset) -> dict[str, torch.Tensor]:
+    return {
+        "input_ids": dataset.input_ids.cpu(),
+        "attention_mask": dataset.attention_mask.cpu(),
+        "labels": dataset.labels.cpu(),
+    }
 
 
 class DeBERTaClassifier(nn.Module):
@@ -266,6 +301,186 @@ class EnsembleWorker:
                 logits = self.model(input_ids, attention_mask)
                 all_logits.append(logits.cpu())
         return torch.cat(all_logits, dim=0)
+
+
+RayTextEnsembleWorker = None
+if RAY_AVAILABLE:
+
+    @ray.remote
+    class RayTextEnsembleWorker:
+        def __init__(self, worker_id: int, worker_config: dict):
+            self.worker_id = worker_id
+            self.worker_config = worker_config
+            self.datasets: dict[str, TensorTextDataset] = {}
+
+            seed = int(worker_config["seed"]) + worker_id
+            set_seed(seed)
+            torch_num_threads = int(worker_config["torch_num_threads"])
+            if torch_num_threads > 0:
+                torch.set_num_threads(torch_num_threads)
+
+            self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+            self.dropout_rate = worker_config["dropout_rates"][worker_id % len(worker_config["dropout_rates"])]
+            self.learning_rate = worker_config["learning_rates"][worker_id % len(worker_config["learning_rates"])]
+            self.use_amp = bool(worker_config["use_amp"] and self.device.type == "cuda")
+            self.batch_size = int(worker_config["batch_size"])
+            self.eval_batch_size = int(worker_config["eval_batch_size"])
+            self.dataloader_workers = int(worker_config["dataloader_workers"])
+            self.pin_memory = bool(worker_config["pin_memory"])
+
+            self.model = DeBERTaClassifier(
+                worker_config["model_name"],
+                int(worker_config["num_classes"]),
+                float(self.dropout_rate),
+            ).to(self.device)
+            if self.use_amp:
+                self.model.float()
+
+            self.optimizer = torch.optim.AdamW(
+                self.model.parameters(),
+                lr=float(self.learning_rate),
+                weight_decay=float(worker_config["weight_decay"]),
+            )
+            self.criterion = nn.CrossEntropyLoss()
+            self.scaler = make_grad_scaler(self.use_amp)
+            self.scheduler = None
+
+            assigned_gpus = ray.get_gpu_ids()
+            first_param = next(self.model.parameters())
+            print(
+                f"Ray worker {worker_id}: assigned_ray_gpus={assigned_gpus}, "
+                f"device={self.device}, amp={self.use_amp}, dropout={self.dropout_rate}, "
+                f"lr={self.learning_rate}, param_dtype={first_param.dtype}"
+            )
+
+        def set_datasets(self, train_payload: dict, val_payload: dict, test_payload: dict) -> dict:
+            self.datasets = {
+                "train": TensorTextDataset(train_payload),
+                "val": TensorTextDataset(val_payload),
+                "test": TensorTextDataset(test_payload),
+            }
+            return {name: len(dataset) for name, dataset in self.datasets.items()}
+
+        def setup_scheduler(self, training_steps: int, warmup_steps: int) -> bool:
+            self.scheduler = get_cosine_schedule_with_warmup(
+                self.optimizer,
+                num_warmup_steps=warmup_steps,
+                num_training_steps=training_steps,
+            )
+            return True
+
+        def _make_loader(self, split: str, batch_size: int, shuffle: bool, seed: Optional[int] = None) -> DataLoader:
+            loader_kwargs = {
+                "num_workers": self.dataloader_workers,
+                "pin_memory": bool(self.pin_memory and torch.cuda.is_available()),
+            }
+            if seed is not None:
+                generator = torch.Generator()
+                generator.manual_seed(seed)
+                loader_kwargs["generator"] = generator
+            return DataLoader(self.datasets[split], batch_size=batch_size, shuffle=shuffle, **loader_kwargs)
+
+        def train_epoch(self, epoch: int) -> dict:
+            if self.scheduler is None:
+                raise RuntimeError("Ray worker scheduler has not been initialized")
+
+            self.model.train()
+            total_loss = 0.0
+            total = 0
+            correct = 0
+            loader = self._make_loader(
+                "train",
+                batch_size=self.batch_size,
+                shuffle=True,
+                seed=int(self.worker_config["seed"]) + epoch * 1000 + self.worker_id,
+            )
+
+            for batch in loader:
+                input_ids = batch["input_ids"].to(self.device, non_blocking=True)
+                attention_mask = batch["attention_mask"].to(self.device, non_blocking=True)
+                labels = batch["labels"].to(self.device, non_blocking=True)
+                self.optimizer.zero_grad(set_to_none=True)
+
+                with amp_context(self.device, self.use_amp):
+                    logits = self.model(input_ids, attention_mask)
+                    loss = self.criterion(logits, labels)
+
+                if self.use_amp:
+                    self.scaler.scale(loss).backward()
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                else:
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                    self.optimizer.step()
+
+                self.scheduler.step()
+                batch_size = labels.size(0)
+                total += batch_size
+                total_loss += loss.detach().item() * batch_size
+                predictions = torch.argmax(logits.detach(), dim=1)
+                correct += (predictions == labels).sum().item()
+
+            val_loss, val_acc = self.evaluate("val")
+            return {
+                "worker_id": self.worker_id,
+                "train_loss": total_loss / max(total, 1),
+                "train_acc": 100 * correct / max(total, 1),
+                "val_loss": val_loss,
+                "val_acc": val_acc,
+            }
+
+        def evaluate(self, split: str) -> tuple[float, float]:
+            self.model.eval()
+            total_loss = 0.0
+            total = 0
+            correct = 0
+            loader = self._make_loader(split, batch_size=self.eval_batch_size, shuffle=False)
+
+            with torch.no_grad():
+                for batch in loader:
+                    input_ids = batch["input_ids"].to(self.device, non_blocking=True)
+                    attention_mask = batch["attention_mask"].to(self.device, non_blocking=True)
+                    labels = batch["labels"].to(self.device, non_blocking=True)
+                    logits = self.model(input_ids, attention_mask)
+                    loss = self.criterion(logits, labels)
+
+                    batch_size = labels.size(0)
+                    total += batch_size
+                    total_loss += loss.detach().item() * batch_size
+                    predictions = torch.argmax(logits, dim=1)
+                    correct += (predictions == labels).sum().item()
+
+            return total_loss / max(total, 1), 100 * correct / max(total, 1)
+
+        def predict_logits(self, split: str) -> tuple[int, torch.Tensor]:
+            self.model.eval()
+            all_logits = []
+            loader = self._make_loader(split, batch_size=self.eval_batch_size, shuffle=False)
+
+            with torch.no_grad():
+                for batch in loader:
+                    input_ids = batch["input_ids"].to(self.device, non_blocking=True)
+                    attention_mask = batch["attention_mask"].to(self.device, non_blocking=True)
+                    logits = self.model(input_ids, attention_mask)
+                    all_logits.append(logits.cpu())
+
+            return self.worker_id, torch.cat(all_logits, dim=0)
+
+        def peak_cuda_memory_mb(self) -> float:
+            if not torch.cuda.is_available():
+                return 0.0
+            return round(torch.cuda.max_memory_allocated(self.device) / 1e6, 2)
+
+        def cleanup(self) -> bool:
+            del self.model
+            self.datasets = {}
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            return True
 
 
 def set_seed(seed: int = SEED) -> None:
@@ -654,6 +869,186 @@ def ensemble_predictions(workers: list[EnsembleWorker], dataset: Dataset, args) 
     return torch.stack(worker_logits, dim=0).mean(dim=0)
 
 
+def ensure_ray(args) -> None:
+    if not RAY_AVAILABLE or ray is None:
+        raise RuntimeError(
+            "Ray backend requested, but ray is not installed. Install it with: pip install 'ray>=2.9.0'"
+        )
+    if ray.is_initialized():
+        print(f"Ray resources: {ray.cluster_resources()}")
+        return
+
+    init_kwargs = {
+        "ignore_reinit_error": True,
+        "include_dashboard": False,
+        "log_to_driver": True,
+    }
+    if args.ray_address:
+        init_kwargs["address"] = args.ray_address
+    else:
+        if torch.cuda.is_available():
+            init_kwargs["num_gpus"] = torch.cuda.device_count()
+        cpu_count = os.cpu_count()
+        if cpu_count:
+            init_kwargs["num_cpus"] = cpu_count
+
+    ray.init(**init_kwargs)
+    print(f"Ray resources: {ray.cluster_resources()}")
+
+
+def build_worker_config(args, num_classes: int) -> dict:
+    return {
+        "model_name": args.model_name,
+        "num_classes": num_classes,
+        "dropout_rates": args.dropout_rates,
+        "learning_rates": args.learning_rates,
+        "weight_decay": args.weight_decay,
+        "use_amp": args.use_amp,
+        "batch_size": args.batch_size,
+        "eval_batch_size": args.batch_size * 2,
+        "dataloader_workers": args.dataloader_workers,
+        "pin_memory": args.pin_memory,
+        "torch_num_threads": args.torch_num_threads,
+        "seed": SEED,
+    }
+
+
+def create_ray_workers(args, num_classes: int):
+    if RayTextEnsembleWorker is None:
+        raise RuntimeError("Ray worker class is unavailable")
+
+    worker_config = build_worker_config(args, num_classes)
+    actor_options = {
+        "num_cpus": args.ray_num_cpus_per_worker,
+        "num_gpus": args.ray_gpus_per_worker if torch.cuda.is_available() else 0,
+    }
+    if args.ray_scheduling_strategy != "DEFAULT":
+        actor_options["scheduling_strategy"] = args.ray_scheduling_strategy
+
+    print(
+        "Creating Ray HQDE workers: "
+        f"count={args.ensemble_workers}, num_gpus_per_worker={actor_options['num_gpus']}, "
+        f"num_cpus_per_worker={actor_options['num_cpus']}"
+    )
+    return [
+        RayTextEnsembleWorker.options(**actor_options).remote(worker_id, worker_config)
+        for worker_id in range(args.ensemble_workers)
+    ]
+
+
+def ensemble_predictions_ray(actors: list, split: str) -> torch.Tensor:
+    worker_logits = []
+    for worker_id, logits in sorted(ray.get([actor.predict_logits.remote(split) for actor in actors])):
+        worker_logits.append(logits)
+    return torch.stack(worker_logits, dim=0).mean(dim=0)
+
+
+def actor_peak_cuda_memory_mb(actors: list) -> float:
+    if not actors:
+        return 0.0
+    try:
+        return max(ray.get([actor.peak_cuda_memory_mb.remote() for actor in actors]))
+    except Exception:
+        return 0.0
+
+
+def cleanup_ray_workers(actors: list) -> None:
+    for actor in actors:
+        try:
+            ray.get(actor.cleanup.remote(), timeout=30)
+        except Exception:
+            pass
+        try:
+            ray.kill(actor)
+        except Exception:
+            pass
+
+
+def run_dataset_ray(
+    result_base: dict,
+    label_names: list[str],
+    val_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    train_ds: Dataset,
+    val_ds: Dataset,
+    test_ds: Dataset,
+    args,
+) -> dict:
+    ensure_ray(args)
+    actors = create_ray_workers(args, len(label_names))
+
+    try:
+        train_ref = ray.put(dataset_payload(train_ds))
+        val_ref = ray.put(dataset_payload(val_ds))
+        test_ref = ray.put(dataset_payload(test_ds))
+        dataset_sizes = ray.get([actor.set_datasets.remote(train_ref, val_ref, test_ref) for actor in actors])
+        print(f"Ray actor dataset sizes: {dataset_sizes[0] if dataset_sizes else {}}")
+
+        steps_per_epoch = max((len(train_ds) + args.batch_size - 1) // args.batch_size, 1)
+        training_steps = max(steps_per_epoch * args.epochs, 1)
+        warmup_steps = int(training_steps * args.warmup_ratio)
+        ray.get([actor.setup_scheduler.remote(training_steps, warmup_steps) for actor in actors])
+
+        started_at = time.perf_counter()
+        best_val_accuracy = 0.0
+        best_val_weighted_f1 = 0.0
+
+        for epoch in range(args.epochs):
+            print(f"\nEpoch {epoch + 1}/{args.epochs}")
+            epoch_results = ray.get([actor.train_epoch.remote(epoch) for actor in actors])
+            for item in sorted(epoch_results, key=lambda value: value["worker_id"]):
+                print(
+                    f"Ray worker {item['worker_id']}: train_loss={item['train_loss']:.4f}, "
+                    f"train_acc={item['train_acc']:.2f}, val_loss={item['val_loss']:.4f}, "
+                    f"val_acc={item['val_acc']:.2f}"
+                )
+
+            val_logits = ensemble_predictions_ray(actors, "val")
+            val_preds = torch.argmax(val_logits, dim=1).numpy()
+            val_labels = val_df["label"].to_numpy()
+            val_acc = accuracy_score(val_labels, val_preds) * 100
+            val_f1 = f1_score(val_labels, val_preds, average="weighted", zero_division=0) * 100
+            best_val_accuracy = max(best_val_accuracy, val_acc)
+            best_val_weighted_f1 = max(best_val_weighted_f1, val_f1)
+            print(f"Ray ensemble validation: accuracy={val_acc:.2f}, weighted_f1={val_f1:.2f}")
+
+        training_time = time.perf_counter() - started_at
+        test_logits = ensemble_predictions_ray(actors, "test")
+        test_preds = torch.argmax(test_logits, dim=1).numpy()
+        test_labels = test_df["label"].to_numpy()
+        test_accuracy = accuracy_score(test_labels, test_preds) * 100
+        test_weighted_f1 = f1_score(test_labels, test_preds, average="weighted", zero_division=0) * 100
+        test_macro_f1 = f1_score(test_labels, test_preds, average="macro", zero_division=0) * 100
+
+        report = classification_report(
+            test_labels,
+            test_preds,
+            labels=list(range(len(label_names))),
+            target_names=label_names,
+            digits=4,
+            zero_division=0,
+            output_dict=True,
+        )
+        dataset_out = Path(args.output_dir) / result_base["dataset_key"]
+        dataset_out.mkdir(parents=True, exist_ok=True)
+        with (dataset_out / "classification_report.json").open("w", encoding="utf-8") as handle:
+            json.dump(report, handle, indent=2)
+
+        return {
+            **result_base,
+            "status": "completed",
+            "best_val_accuracy": round(best_val_accuracy, 4),
+            "best_val_weighted_f1": round(best_val_weighted_f1, 4),
+            "test_accuracy": round(test_accuracy, 4),
+            "test_weighted_f1": round(test_weighted_f1, 4),
+            "test_macro_f1": round(test_macro_f1, 4),
+            "training_time_sec": round(training_time, 2),
+            "peak_cuda_memory_mb": max(peak_cuda_memory_mb(), actor_peak_cuda_memory_mb(actors)),
+        }
+    finally:
+        cleanup_ray_workers(actors)
+
+
 def run_dataset(spec: DatasetSpec, tokenizer, args) -> dict:
     print("\n" + "=" * 88)
     print(f"Dataset: {spec.display_name} ({spec.hf_id})")
@@ -692,6 +1087,9 @@ def run_dataset(spec: DatasetSpec, tokenizer, args) -> dict:
         "observed_classes": label_metadata["observed_classes"],
         "missing_classes": "; ".join(label_metadata["missing_classes"]),
         "dropped_rows": label_metadata["dropped_rows"],
+        "backend": args.backend,
+        "ensemble_workers": args.ensemble_workers,
+        "ray_gpus_per_worker": args.ray_gpus_per_worker if args.backend == "ray" else None,
         **overlaps,
     }
 
@@ -708,6 +1106,18 @@ def run_dataset(spec: DatasetSpec, tokenizer, args) -> dict:
         }
 
     train_ds, val_ds, test_ds = create_datasets(train_df, val_df, test_df, tokenizer, args)
+    if args.backend == "ray":
+        return run_dataset_ray(
+            result_base,
+            label_names,
+            val_df,
+            test_df,
+            train_ds,
+            val_ds,
+            test_ds,
+            args,
+        )
+
     devices = resolve_devices(args.ensemble_workers)
     workers = [EnsembleWorker(idx, args, len(label_names), device) for idx, device in enumerate(devices)]
     waves = worker_waves(workers, args.parallel_workers)
@@ -842,6 +1252,9 @@ def write_outputs(results: list[dict], args) -> None:
         "observed_classes",
         "missing_classes",
         "dropped_rows",
+        "backend",
+        "ensemble_workers",
+        "ray_gpus_per_worker",
         "train_rows",
         "val_rows",
         "test_rows",
@@ -865,9 +1278,22 @@ def write_outputs(results: list[dict], args) -> None:
     print(markdown_table(frame[available_columns]))
 
 
+def default_backend() -> str:
+    configured = os.environ.get("HQDE_BACKEND")
+    if configured:
+        return configured
+    return "ray" if RAY_AVAILABLE and torch.cuda.is_available() else "local"
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--datasets", default=os.environ.get("HQDE_DATASETS", DEFAULT_DATASETS))
+    parser.add_argument(
+        "--backend",
+        choices=("local", "ray"),
+        default=default_backend(),
+        help="Execution backend. Use ray for HQDE-style distributed actor workers and central aggregation.",
+    )
     parser.add_argument(
         "--label-mode",
         choices=("native", "canonical10"),
@@ -893,6 +1319,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--learning-rates", default=os.environ.get("HQDE_LEARNING_RATES", "1.5e-5,2e-5,2.5e-5,3e-5"))
     parser.add_argument("--dropout-rates", default=os.environ.get("HQDE_DROPOUT_RATES", "0.1,0.15,0.2,0.25"))
     parser.add_argument("--torch-num-threads", type=int, default=int(os.environ.get("HQDE_TORCH_NUM_THREADS", "1" if torch.cuda.is_available() else "0")))
+    parser.add_argument("--ray-address", default=os.environ.get("HQDE_RAY_ADDRESS", ""))
+    parser.add_argument("--ray-gpus-per-worker", type=float, default=float(os.environ.get("HQDE_RAY_GPUS_PER_WORKER", "0.25")))
+    parser.add_argument("--ray-num-cpus-per-worker", type=float, default=float(os.environ.get("HQDE_RAY_CPUS_PER_WORKER", "1")))
+    parser.add_argument(
+        "--ray-scheduling-strategy",
+        choices=("DEFAULT", "SPREAD"),
+        default=os.environ.get("HQDE_RAY_SCHEDULING_STRATEGY", "SPREAD"),
+        help="Ray actor scheduling hint. SPREAD helps distribute workers where resources allow.",
+    )
     parser.add_argument("--quick-test", action="store_true", default=os.environ.get("HQDE_QUICK_TEST", "0") == "1")
     parser.add_argument("--dry-run", action="store_true", default=os.environ.get("HQDE_DRY_RUN", "0") == "1")
     parser.add_argument("--no-amp", action="store_true", default=os.environ.get("HQDE_NO_AMP", "0") == "1")
@@ -917,6 +1352,11 @@ def main() -> None:
     args.dropout_rates = [float(value) for value in args.dropout_rates.split(",")]
     args.use_amp = not args.no_amp
 
+    if args.backend == "ray" and not RAY_AVAILABLE and not args.dry_run:
+        raise RuntimeError(
+            "Ray backend requested, but ray is not installed. Install it with: pip install 'ray>=2.9.0'"
+        )
+
     if args.torch_num_threads > 0:
         torch.set_num_threads(args.torch_num_threads)
 
@@ -929,7 +1369,8 @@ def main() -> None:
         args.batch_size = min(args.batch_size, 2)
 
     args.parallel_workers = bool(
-        torch.cuda.is_available()
+        args.backend == "local"
+        and torch.cuda.is_available()
         and torch.cuda.device_count() > 1
         and not args.sequential_workers
         and args.ensemble_workers > 1
@@ -941,8 +1382,14 @@ def main() -> None:
     print(f"Label mode: {args.label_mode}")
     print(f"Model: {args.model_name}")
     print(f"Epochs: {args.epochs}")
+    print(f"Backend: {args.backend}")
     print(f"Ensemble workers: {args.ensemble_workers}")
-    print(f"Parallel worker waves: {args.parallel_workers}")
+    if args.backend == "ray":
+        print(f"Ray available: {RAY_AVAILABLE}")
+        print(f"Ray GPUs per worker: {args.ray_gpus_per_worker}")
+        print(f"Ray CPUs per worker: {args.ray_num_cpus_per_worker}")
+    else:
+        print(f"Parallel worker waves: {args.parallel_workers}")
     print(f"Batch size: {args.batch_size}")
     print(f"Torch CPU threads: {torch.get_num_threads()}")
     print(f"Device: {'cuda' if torch.cuda.is_available() else 'cpu'}")
@@ -960,6 +1407,8 @@ def main() -> None:
         results.append(run_dataset(DATASET_SPECS[key], tokenizer, args))
 
     write_outputs(results, args)
+    if args.backend == "ray" and RAY_AVAILABLE and ray is not None and ray.is_initialized():
+        ray.shutdown()
 
 
 if __name__ == "__main__":

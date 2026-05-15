@@ -114,11 +114,11 @@ For a comparison table across datasets, use:
 
 ```bash
 python examples/cbt_multi_dataset_comparison.py --quick-test --dry-run
-python examples/cbt_multi_dataset_comparison.py --label-mode canonical10 --epochs 5 --max-train-samples 1000 --max-eval-samples 300
+python examples/cbt_multi_dataset_comparison.py --backend ray --ray-gpus-per-worker 0.25 --label-mode canonical10 --epochs 5 --max-train-samples 1000 --max-eval-samples 300
 ```
 
 For Kaggle 2xT4, use `examples/cbt_multi_dataset_hqde_kaggle_2xT4.ipynb`.
-It configures 4 HQDE ensemble workers, uses canonical 10-label mapping, pre-tokenizes each split once, trains one worker per GPU in parallel waves, and writes the same output tables.
+It configures 4 HQDE ensemble workers as Ray actors, uses canonical 10-label mapping, pre-tokenizes each split once, requests `num_gpus=0.25` per worker, aggregates worker logits on the coordinator, and writes the same output tables.
 
 The script writes:
 

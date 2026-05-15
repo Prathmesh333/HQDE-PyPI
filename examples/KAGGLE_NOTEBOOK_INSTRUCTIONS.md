@@ -85,11 +85,11 @@ Do not present synthetic toy-data metrics as a production or clinical result.
 For a final thesis or paper table, run:
 
 ```bash
-python examples/cbt_multi_dataset_comparison.py --label-mode canonical10 --epochs 5 --max-train-samples 1000 --max-eval-samples 300
+python examples/cbt_multi_dataset_comparison.py --backend ray --ray-gpus-per-worker 0.25 --label-mode canonical10 --epochs 5 --max-train-samples 1000 --max-eval-samples 300
 ```
 
 From the Kaggle UI, use `examples/cbt_multi_dataset_hqde_kaggle_2xT4.ipynb`.
-It is preconfigured for 2xT4, 4 HQDE ensemble workers, 4 vCPUs, canonical 10-label CBT mapping, pre-tokenization, and one-worker-per-GPU training waves.
+It is preconfigured for 2xT4, 4 HQDE ensemble Ray actors, 4 vCPUs, canonical 10-label CBT mapping, pre-tokenization, `num_gpus=0.25` per worker, and coordinator-side ensemble aggregation.
 
 Use `--quick-test --dry-run` first to verify dataset availability and exact
 overlap checks without training:

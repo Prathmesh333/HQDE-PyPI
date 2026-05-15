@@ -29,6 +29,8 @@ text overlap, and writes table artifacts without downloading DeBERTa weights.
 
 ```bash
 python examples/cbt_multi_dataset_comparison.py \
+  --backend ray \
+  --ray-gpus-per-worker 0.25 \
   --label-mode canonical10 \
   --epochs 5 \
   --max-train-samples 1000 \
@@ -73,11 +75,12 @@ Kaggle notebook UI. It is configured for:
 - 2 Tesla T4 GPUs.
 - 4 HQDE ensemble workers.
 - 4 vCPUs.
+- Ray actor backend with `num_gpus=0.25` and one CPU requested per worker.
 - Single-process DataLoaders for notebook stability.
 - Canonical 10-label CBT mapping by default.
 - Batched pre-tokenization so each split is encoded once, not once per worker
   per epoch.
-- Parallel worker waves so one worker runs on each T4 at the same time.
+- Parallel Ray training actors and coordinator-side logit aggregation.
 
 Run the dry-run cell first, then the full benchmark cell.
 
@@ -93,6 +96,9 @@ Useful environment variables:
 ```python
 import os
 os.environ["HQDE_NUM_EPOCHS"] = "5"
+os.environ["HQDE_BACKEND"] = "ray"
+os.environ["HQDE_RAY_GPUS_PER_WORKER"] = "0.25"
+os.environ["HQDE_RAY_CPUS_PER_WORKER"] = "1"
 os.environ["HQDE_MAX_TRAIN_SAMPLES"] = "1000"
 os.environ["HQDE_MAX_EVAL_SAMPLES"] = "300"
 os.environ["HQDE_ENSEMBLE_WORKERS"] = "4"
