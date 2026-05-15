@@ -13,7 +13,7 @@ Default datasets:
 
 Example:
     python examples/cbt_multi_dataset_comparison.py --quick-test --dry-run
-    python examples/cbt_multi_dataset_comparison.py --epochs 5 --max-train-samples 1000
+    python examples/cbt_multi_dataset_comparison.py --label-mode canonical10 --epochs 5 --max-train-samples 1000
 """
 
 from __future__ import annotations
@@ -50,6 +50,49 @@ except ImportError:  # pragma: no cover - older PyTorch fallback
 
 SEED = 42
 DEFAULT_DATASETS = "danthareja,halil-gpt4,elliott-validation"
+CANONICAL_10_LABELS = [
+    "All-or-Nothing Thinking",
+    "Overgeneralization",
+    "Mental Filter",
+    "Disqualifying the Positive",
+    "Jumping to Conclusions",
+    "Magnification/Catastrophizing",
+    "Emotional Reasoning",
+    "Should Statements",
+    "Labeling",
+    "Personalization",
+]
+
+
+def label_key(value: str) -> str:
+    value = "" if value is None else str(value).strip().lower()
+    value = value.replace("&", " and ")
+    value = re.sub(r"[^a-z0-9]+", " ", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+CANONICAL_10_MAP = {
+    label_key("All-or-Nothing Thinking"): "All-or-Nothing Thinking",
+    label_key("All or Nothing Thinking"): "All-or-Nothing Thinking",
+    label_key("All or Nothing"): "All-or-Nothing Thinking",
+    label_key("Overgeneralization"): "Overgeneralization",
+    label_key("Mental Filter"): "Mental Filter",
+    label_key("Disqualifying the Positive"): "Disqualifying the Positive",
+    label_key("Discounting Positive"): "Disqualifying the Positive",
+    label_key("Jumping to Conclusions"): "Jumping to Conclusions",
+    label_key("Mind Reading"): "Jumping to Conclusions",
+    label_key("Fortune Telling"): "Jumping to Conclusions",
+    label_key("Fortune-telling"): "Jumping to Conclusions",
+    label_key("Magnification"): "Magnification/Catastrophizing",
+    label_key("Magnification Minimization"): "Magnification/Catastrophizing",
+    label_key("Catastrophizing"): "Magnification/Catastrophizing",
+    label_key("Emotional Reasoning"): "Emotional Reasoning",
+    label_key("Should Statements"): "Should Statements",
+    label_key("Should statements"): "Should Statements",
+    label_key("Labeling"): "Labeling",
+    label_key("Labelling"): "Labeling",
+    label_key("Personalization"): "Personalization",
+}
 
 
 @dataclass(frozen=True)
@@ -438,6 +481,60 @@ def overlap_counts(train_df: pd.DataFrame, val_df: pd.DataFrame, test_df: pd.Dat
     }
 
 
+def apply_label_mode(
+    train_source: pd.DataFrame,
+    test_source: Optional[pd.DataFrame],
+    label_names: list[str],
+    label_mode: str,
+) -> tuple[pd.DataFrame, Optional[pd.DataFrame], list[str], dict[str, object]]:
+    if label_mode == "native":
+        observed = sorted(set(train_source["distortion_name"].astype(str)))
+        if test_source is not None and not test_source.empty:
+            observed = sorted(set(observed) | set(test_source["distortion_name"].astype(str)))
+        return train_source, test_source, label_names, {
+            "label_mode": "native",
+            "observed_classes": len(observed),
+            "missing_classes": [],
+            "dropped_rows": 0,
+        }
+
+    if label_mode != "canonical10":
+        raise ValueError(f"Unsupported label mode: {label_mode}")
+
+    canonical_to_id = {name: idx for idx, name in enumerate(CANONICAL_10_LABELS)}
+
+    def convert(frame: Optional[pd.DataFrame]) -> tuple[Optional[pd.DataFrame], int]:
+        if frame is None:
+            return None, 0
+        converted = frame.copy()
+        converted["canonical_name"] = converted["distortion_name"].map(
+            lambda value: CANONICAL_10_MAP.get(label_key(value))
+        )
+        dropped = int(converted["canonical_name"].isna().sum())
+        converted = converted.dropna(subset=["canonical_name"]).copy()
+        converted["distortion_name"] = converted["canonical_name"]
+        converted["label"] = converted["distortion_name"].map(canonical_to_id).astype(int)
+        converted = converted.drop(columns=["canonical_name"])
+        return converted.reset_index(drop=True), dropped
+
+    train_converted, train_dropped = convert(train_source)
+    test_converted, test_dropped = convert(test_source)
+    if train_converted is None or train_converted.empty:
+        raise ValueError("No training rows remain after canonical10 label mapping")
+
+    observed = set(train_converted["distortion_name"])
+    if test_converted is not None and not test_converted.empty:
+        observed |= set(test_converted["distortion_name"])
+    missing = [name for name in CANONICAL_10_LABELS if name not in observed]
+
+    return train_converted, test_converted, CANONICAL_10_LABELS, {
+        "label_mode": "canonical10",
+        "observed_classes": len(observed),
+        "missing_classes": missing,
+        "dropped_rows": train_dropped + test_dropped,
+    }
+
+
 def make_grad_scaler(enabled: bool):
     try:
         return GradScaler("cuda", enabled=enabled)
@@ -495,10 +592,21 @@ def run_dataset(spec: DatasetSpec, tokenizer, args) -> dict:
     print("=" * 88)
 
     train_source, test_source, label_names = spec.loader()
+    train_source, test_source, label_names, label_metadata = apply_label_mode(
+        train_source,
+        test_source,
+        label_names,
+        args.label_mode,
+    )
     train_df, val_df, test_df = split_dataset(train_source, test_source, args)
     overlaps = overlap_counts(train_df, val_df, test_df)
 
-    print(f"Classes: {len(label_names)}")
+    print(f"Label mode: {label_metadata['label_mode']}")
+    print(f"Classes: {len(label_names)} configured, {label_metadata['observed_classes']} observed")
+    if label_metadata["missing_classes"]:
+        print(f"Missing configured classes: {', '.join(label_metadata['missing_classes'])}")
+    if label_metadata["dropped_rows"]:
+        print(f"Dropped rows during label mapping: {label_metadata['dropped_rows']}")
     print(f"Rows: train={len(train_df)}, val={len(val_df)}, test={len(test_df)}")
     print(f"Exact overlaps: {overlaps}")
 
@@ -512,6 +620,10 @@ def run_dataset(spec: DatasetSpec, tokenizer, args) -> dict:
         "train_rows": len(train_df),
         "val_rows": len(val_df),
         "test_rows": len(test_df),
+        "label_mode": label_metadata["label_mode"],
+        "observed_classes": label_metadata["observed_classes"],
+        "missing_classes": "; ".join(label_metadata["missing_classes"]),
+        "dropped_rows": label_metadata["dropped_rows"],
         **overlaps,
     }
 
@@ -640,7 +752,11 @@ def write_outputs(results: list[dict], args) -> None:
     paper_columns = [
         "dataset",
         "source_type",
+        "label_mode",
         "num_classes",
+        "observed_classes",
+        "missing_classes",
+        "dropped_rows",
         "train_rows",
         "val_rows",
         "test_rows",
@@ -667,6 +783,15 @@ def write_outputs(results: list[dict], args) -> None:
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--datasets", default=os.environ.get("HQDE_DATASETS", DEFAULT_DATASETS))
+    parser.add_argument(
+        "--label-mode",
+        choices=("native", "canonical10"),
+        default=os.environ.get("HQDE_LABEL_MODE", "native"),
+        help=(
+            "native keeps each dataset's own labels; canonical10 maps compatible labels "
+            "to the 10 CBT distortion categories and drops unmapped rows such as No Distortion."
+        ),
+    )
     parser.add_argument("--output-dir", default=os.environ.get("HQDE_OUTPUT_DIR", "benchmark_outputs/cbt_multi_dataset"))
     parser.add_argument("--model-name", default=os.environ.get("HQDE_MODEL_NAME", "microsoft/deberta-v3-base"))
     parser.add_argument("--epochs", type=int, default=int(os.environ.get("HQDE_NUM_EPOCHS", "3")))
@@ -716,6 +841,7 @@ def main() -> None:
     set_seed(SEED)
     print("HQDE CBT multi-dataset comparison")
     print(f"Datasets: {', '.join(args.dataset_keys)}")
+    print(f"Label mode: {args.label_mode}")
     print(f"Model: {args.model_name}")
     print(f"Epochs: {args.epochs}")
     print(f"Ensemble workers: {args.ensemble_workers}")

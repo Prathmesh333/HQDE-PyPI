@@ -114,11 +114,11 @@ For a comparison table across datasets, use:
 
 ```bash
 python examples/cbt_multi_dataset_comparison.py --quick-test --dry-run
-python examples/cbt_multi_dataset_comparison.py --epochs 5 --max-train-samples 1000 --max-eval-samples 300
+python examples/cbt_multi_dataset_comparison.py --label-mode canonical10 --epochs 5 --max-train-samples 1000 --max-eval-samples 300
 ```
 
 For Kaggle 2xT4, use `examples/cbt_multi_dataset_hqde_kaggle_2xT4.ipynb`.
-It configures 4 HQDE ensemble workers and writes the same output tables.
+It configures 4 HQDE ensemble workers, uses canonical 10-label mapping, and writes the same output tables.
 
 The script writes:
 
@@ -132,7 +132,7 @@ The default rows are:
 - `halilbabacan/cognitive_distortions_gpt4`
 - `elliott-leow/cognitive_distortion_validation`
 
-Report these as separate rows because they have different label spaces and data-collection methods.
+For the main thesis table, use `--label-mode canonical10` so compatible dataset labels are mapped into the same 10 CBT categories. The output table reports `missing_classes` when a dataset does not contain one of the canonical categories.
 
 ## Next Code Improvement
 

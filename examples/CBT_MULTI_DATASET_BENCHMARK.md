@@ -29,6 +29,7 @@ text overlap, and writes table artifacts without downloading DeBERTa weights.
 
 ```bash
 python examples/cbt_multi_dataset_comparison.py \
+  --label-mode canonical10 \
   --epochs 5 \
   --max-train-samples 1000 \
   --max-eval-samples 300 \
@@ -37,6 +38,32 @@ python examples/cbt_multi_dataset_comparison.py \
 
 For a longer thesis run, increase `--epochs` and remove the sample caps if the
 Kaggle runtime allows it.
+
+## Label Modes
+
+Use `--label-mode canonical10` for the main thesis table if you want the same
+10 CBT cognitive-distortion categories across datasets:
+
+1. All-or-Nothing Thinking
+2. Overgeneralization
+3. Mental Filter
+4. Disqualifying the Positive
+5. Jumping to Conclusions
+6. Magnification/Catastrophizing
+7. Emotional Reasoning
+8. Should Statements
+9. Labeling
+10. Personalization
+
+This mode maps compatible labels, for example `Mind Reading` and
+`Fortune-telling` to `Jumping to Conclusions`, and drops unmapped labels such
+as `No Distortion`. The output table includes `missing_classes` and
+`dropped_rows`; if a dataset does not contain one of the 10 categories, the
+script reports that explicitly.
+
+Use `--label-mode native` only when you want to evaluate each dataset in its
+own original label space. Native mode is useful for robustness checks, but it
+is not an apples-to-apples 10-class comparison.
 
 ## Kaggle 2xT4 Notebook
 
@@ -47,6 +74,7 @@ Kaggle notebook UI. It is configured for:
 - 4 HQDE ensemble workers.
 - 4 vCPUs.
 - Single-process DataLoaders for notebook stability.
+- Canonical 10-label CBT mapping by default.
 
 Run the dry-run cell first, then the full benchmark cell.
 

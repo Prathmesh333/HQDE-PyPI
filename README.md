@@ -182,10 +182,10 @@ Quick dataset/split check:
 python examples/cbt_multi_dataset_comparison.py --quick-test --dry-run
 ```
 
-Full run example:
+Full canonical 10-label run example:
 
 ```bash
-python examples/cbt_multi_dataset_comparison.py --epochs 5 --max-train-samples 1000 --max-eval-samples 300
+python examples/cbt_multi_dataset_comparison.py --label-mode canonical10 --epochs 5 --max-train-samples 1000 --max-eval-samples 300
 ```
 
 See [examples/CBT_MULTI_DATASET_BENCHMARK.md](examples/CBT_MULTI_DATASET_BENCHMARK.md) for reporting guidance.
