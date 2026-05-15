@@ -89,7 +89,7 @@ python examples/cbt_multi_dataset_comparison.py --label-mode canonical10 --epoch
 ```
 
 From the Kaggle UI, use `examples/cbt_multi_dataset_hqde_kaggle_2xT4.ipynb`.
-It is preconfigured for 2xT4, 4 HQDE ensemble workers, 4 vCPUs, and canonical 10-label CBT mapping.
+It is preconfigured for 2xT4, 4 HQDE ensemble workers, 4 vCPUs, canonical 10-label CBT mapping, pre-tokenization, and one-worker-per-GPU training waves.
 
 Use `--quick-test --dry-run` first to verify dataset availability and exact
 overlap checks without training:

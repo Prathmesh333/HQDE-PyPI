@@ -25,6 +25,7 @@ import os
 import random
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import nullcontext
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
@@ -107,28 +108,28 @@ class DatasetSpec:
 
 class TextClassificationDataset(Dataset):
     def __init__(self, texts, labels, tokenizer, max_length: int):
-        self.texts = list(texts)
-        self.labels = list(labels)
-        self.tokenizer = tokenizer
-        self.max_length = max_length
-
-    def __len__(self) -> int:
-        return len(self.texts)
-
-    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
-        encoded = self.tokenizer(
-            str(self.texts[idx]),
+        text_values = [str(text) for text in texts]
+        encoded = tokenizer(
+            text_values,
             add_special_tokens=True,
-            max_length=self.max_length,
+            max_length=max_length,
             padding="max_length",
             truncation=True,
             return_attention_mask=True,
             return_tensors="pt",
         )
+        self.input_ids = encoded["input_ids"]
+        self.attention_mask = encoded["attention_mask"]
+        self.labels = torch.tensor([int(label) for label in labels], dtype=torch.long)
+
+    def __len__(self) -> int:
+        return int(self.labels.size(0))
+
+    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
         return {
-            "input_ids": encoded["input_ids"].flatten(),
-            "attention_mask": encoded["attention_mask"].flatten(),
-            "labels": torch.tensor(int(self.labels[idx]), dtype=torch.long),
+            "input_ids": self.input_ids[idx],
+            "attention_mask": self.attention_mask[idx],
+            "labels": self.labels[idx],
         }
 
 
@@ -194,13 +195,13 @@ class EnsembleWorker:
             f"param_dtype={first_param.dtype}"
         )
 
-    def train_epoch(self, data_loader: DataLoader, scheduler) -> tuple[float, float]:
+    def train_epoch(self, data_loader: DataLoader, scheduler, show_progress: bool = True) -> tuple[float, float]:
         self.model.train()
         total_loss = 0.0
         total = 0
         correct = 0
 
-        progress = tqdm(data_loader, desc=f"Worker {self.worker_id} train", leave=False)
+        progress = tqdm(data_loader, desc=f"Worker {self.worker_id} train", leave=False, disable=not show_progress)
         for batch in progress:
             input_ids = batch["input_ids"].to(self.device, non_blocking=True)
             attention_mask = batch["attention_mask"].to(self.device, non_blocking=True)
@@ -233,14 +234,14 @@ class EnsembleWorker:
 
         return total_loss / max(total, 1), 100 * correct / max(total, 1)
 
-    def evaluate(self, data_loader: DataLoader) -> tuple[float, float]:
+    def evaluate(self, data_loader: DataLoader, show_progress: bool = True) -> tuple[float, float]:
         self.model.eval()
         total_loss = 0.0
         total = 0
         correct = 0
 
         with torch.no_grad():
-            for batch in tqdm(data_loader, desc=f"Worker {self.worker_id} eval", leave=False):
+            for batch in tqdm(data_loader, desc=f"Worker {self.worker_id} eval", leave=False, disable=not show_progress):
                 input_ids = batch["input_ids"].to(self.device, non_blocking=True)
                 attention_mask = batch["attention_mask"].to(self.device, non_blocking=True)
                 labels = batch["labels"].to(self.device, non_blocking=True)
@@ -558,32 +559,99 @@ def resolve_devices(num_workers: int) -> list[torch.device]:
     return [torch.device("cpu") for _ in range(num_workers)]
 
 
-def create_loaders(
+def create_datasets(
     train_df: pd.DataFrame,
     val_df: pd.DataFrame,
     test_df: pd.DataFrame,
     tokenizer,
     args,
-) -> tuple[DataLoader, DataLoader, DataLoader]:
+) -> tuple[Dataset, Dataset, Dataset]:
+    print("Tokenizing train/validation/test splits once for reuse across workers...")
+    return (
+        TextClassificationDataset(train_df["text"], train_df["label"], tokenizer, args.max_length),
+        TextClassificationDataset(val_df["text"], val_df["label"], tokenizer, args.max_length),
+        TextClassificationDataset(test_df["text"], test_df["label"], tokenizer, args.max_length),
+    )
+
+
+def make_loader(
+    dataset: Dataset,
+    batch_size: int,
+    shuffle: bool,
+    args,
+    seed: Optional[int] = None,
+) -> DataLoader:
     loader_kwargs = {
         "num_workers": args.dataloader_workers,
         "pin_memory": bool(args.pin_memory and torch.cuda.is_available()),
     }
+    if seed is not None:
+        generator = torch.Generator()
+        generator.manual_seed(seed)
+        loader_kwargs["generator"] = generator
 
-    train_ds = TextClassificationDataset(train_df["text"], train_df["label"], tokenizer, args.max_length)
-    val_ds = TextClassificationDataset(val_df["text"], val_df["label"], tokenizer, args.max_length)
-    test_ds = TextClassificationDataset(test_df["text"], test_df["label"], tokenizer, args.max_length)
+    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, **loader_kwargs)
 
-    return (
-        DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, **loader_kwargs),
-        DataLoader(val_ds, batch_size=args.batch_size * 2, shuffle=False, **loader_kwargs),
-        DataLoader(test_ds, batch_size=args.batch_size * 2, shuffle=False, **loader_kwargs),
+
+def worker_waves(workers: list[EnsembleWorker], parallel_workers: bool) -> list[list[EnsembleWorker]]:
+    if not parallel_workers:
+        return [[worker] for worker in workers]
+
+    pending = list(workers)
+    waves: list[list[EnsembleWorker]] = []
+    while pending:
+        used_devices: set[str] = set()
+        wave: list[EnsembleWorker] = []
+        remaining: list[EnsembleWorker] = []
+        for worker in pending:
+            device_key = str(worker.device)
+            if device_key in used_devices:
+                remaining.append(worker)
+            else:
+                used_devices.add(device_key)
+                wave.append(worker)
+        waves.append(wave)
+        pending = remaining
+    return waves
+
+
+def run_worker_epoch(worker: EnsembleWorker, scheduler, train_ds: Dataset, val_ds: Dataset, args, epoch: int):
+    train_loader = make_loader(
+        train_ds,
+        batch_size=args.batch_size,
+        shuffle=True,
+        args=args,
+        seed=SEED + epoch * 1000 + worker.worker_id,
     )
+    val_loader = make_loader(val_ds, batch_size=args.batch_size * 2, shuffle=False, args=args)
+    show_progress = not args.parallel_workers
+    train_loss, train_acc = worker.train_epoch(train_loader, scheduler, show_progress=show_progress)
+    val_loss, val_acc = worker.evaluate(val_loader, show_progress=show_progress)
+    return worker.worker_id, train_loss, train_acc, val_loss, val_acc
 
 
-def ensemble_predictions(workers: list[EnsembleWorker], data_loader: DataLoader) -> torch.Tensor:
-    logits = [worker.predict_logits(data_loader) for worker in workers]
-    return torch.stack(logits, dim=0).mean(dim=0)
+def run_worker_wave(wave: list[EnsembleWorker], fn, parallel_workers: bool):
+    if len(wave) == 1 or not parallel_workers:
+        return [fn(worker) for worker in wave]
+
+    results = []
+    with ThreadPoolExecutor(max_workers=len(wave)) as executor:
+        futures = [executor.submit(fn, worker) for worker in wave]
+        for future in as_completed(futures):
+            results.append(future.result())
+    return results
+
+
+def ensemble_predictions(workers: list[EnsembleWorker], dataset: Dataset, args) -> torch.Tensor:
+    def predict(worker: EnsembleWorker):
+        loader = make_loader(dataset, batch_size=args.batch_size * 2, shuffle=False, args=args)
+        return worker.worker_id, worker.predict_logits(loader)
+
+    worker_logits: list[torch.Tensor] = []
+    for wave in worker_waves(workers, args.parallel_workers):
+        for _, logits in sorted(run_worker_wave(wave, predict, args.parallel_workers), key=lambda item: item[0]):
+            worker_logits.append(logits)
+    return torch.stack(worker_logits, dim=0).mean(dim=0)
 
 
 def run_dataset(spec: DatasetSpec, tokenizer, args) -> dict:
@@ -639,11 +707,17 @@ def run_dataset(spec: DatasetSpec, tokenizer, args) -> dict:
             "peak_cuda_memory_mb": peak_cuda_memory_mb(),
         }
 
-    train_loader, val_loader, test_loader = create_loaders(train_df, val_df, test_df, tokenizer, args)
+    train_ds, val_ds, test_ds = create_datasets(train_df, val_df, test_df, tokenizer, args)
     devices = resolve_devices(args.ensemble_workers)
     workers = [EnsembleWorker(idx, args, len(label_names), device) for idx, device in enumerate(devices)]
+    waves = worker_waves(workers, args.parallel_workers)
+    print(
+        "Worker execution waves: "
+        + " | ".join("[" + ", ".join(f"{w.worker_id}:{w.device}" for w in wave) + "]" for wave in waves)
+    )
 
-    training_steps = max(len(train_loader) * args.epochs, 1)
+    steps_per_epoch = max((len(train_ds) + args.batch_size - 1) // args.batch_size, 1)
+    training_steps = max(steps_per_epoch * args.epochs, 1)
     warmup_steps = int(training_steps * args.warmup_ratio)
     schedulers = {
         worker.worker_id: get_cosine_schedule_with_warmup(
@@ -660,15 +734,26 @@ def run_dataset(spec: DatasetSpec, tokenizer, args) -> dict:
 
     for epoch in range(args.epochs):
         print(f"\nEpoch {epoch + 1}/{args.epochs}")
-        for worker in workers:
-            train_loss, train_acc = worker.train_epoch(train_loader, schedulers[worker.worker_id])
-            val_loss, val_acc = worker.evaluate(val_loader)
-            print(
-                f"Worker {worker.worker_id}: train_loss={train_loss:.4f}, "
-                f"train_acc={train_acc:.2f}, val_loss={val_loss:.4f}, val_acc={val_acc:.2f}"
+        for wave in waves:
+            wave_results = run_worker_wave(
+                wave,
+                lambda worker: run_worker_epoch(
+                    worker,
+                    schedulers[worker.worker_id],
+                    train_ds,
+                    val_ds,
+                    args,
+                    epoch,
+                ),
+                args.parallel_workers,
             )
+            for worker_id, train_loss, train_acc, val_loss, val_acc in sorted(wave_results):
+                print(
+                    f"Worker {worker_id}: train_loss={train_loss:.4f}, "
+                    f"train_acc={train_acc:.2f}, val_loss={val_loss:.4f}, val_acc={val_acc:.2f}"
+                )
 
-        val_logits = ensemble_predictions(workers, val_loader)
+        val_logits = ensemble_predictions(workers, val_ds, args)
         val_preds = torch.argmax(val_logits, dim=1).numpy()
         val_labels = val_df["label"].to_numpy()
         val_acc = accuracy_score(val_labels, val_preds) * 100
@@ -678,7 +763,7 @@ def run_dataset(spec: DatasetSpec, tokenizer, args) -> dict:
         print(f"Ensemble validation: accuracy={val_acc:.2f}, weighted_f1={val_f1:.2f}")
 
     training_time = time.perf_counter() - started_at
-    test_logits = ensemble_predictions(workers, test_loader)
+    test_logits = ensemble_predictions(workers, test_ds, args)
     test_preds = torch.argmax(test_logits, dim=1).numpy()
     test_labels = test_df["label"].to_numpy()
     test_accuracy = accuracy_score(test_labels, test_preds) * 100
@@ -711,7 +796,7 @@ def run_dataset(spec: DatasetSpec, tokenizer, args) -> dict:
         "peak_cuda_memory_mb": peak_cuda_memory_mb(),
     }
 
-    del workers, train_loader, val_loader, test_loader
+    del workers, train_ds, val_ds, test_ds
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -807,9 +892,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--weight-decay", type=float, default=float(os.environ.get("HQDE_WEIGHT_DECAY", "0.01")))
     parser.add_argument("--learning-rates", default=os.environ.get("HQDE_LEARNING_RATES", "1.5e-5,2e-5,2.5e-5,3e-5"))
     parser.add_argument("--dropout-rates", default=os.environ.get("HQDE_DROPOUT_RATES", "0.1,0.15,0.2,0.25"))
+    parser.add_argument("--torch-num-threads", type=int, default=int(os.environ.get("HQDE_TORCH_NUM_THREADS", "1" if torch.cuda.is_available() else "0")))
     parser.add_argument("--quick-test", action="store_true", default=os.environ.get("HQDE_QUICK_TEST", "0") == "1")
     parser.add_argument("--dry-run", action="store_true", default=os.environ.get("HQDE_DRY_RUN", "0") == "1")
     parser.add_argument("--no-amp", action="store_true", default=os.environ.get("HQDE_NO_AMP", "0") == "1")
+    parser.add_argument("--sequential-workers", action="store_true", default=os.environ.get("HQDE_SEQUENTIAL_WORKERS", "0") == "1")
     parser.add_argument("--pin-memory", action="store_true", default=os.environ.get("HQDE_PIN_MEMORY", "0") == "1")
     parser.add_argument("--list-datasets", action="store_true")
     return parser
@@ -830,6 +917,9 @@ def main() -> None:
     args.dropout_rates = [float(value) for value in args.dropout_rates.split(",")]
     args.use_amp = not args.no_amp
 
+    if args.torch_num_threads > 0:
+        torch.set_num_threads(args.torch_num_threads)
+
     if args.quick_test:
         args.epochs = min(args.epochs, 1)
         args.max_length = min(args.max_length, 64)
@@ -838,6 +928,13 @@ def main() -> None:
         args.ensemble_workers = min(args.ensemble_workers, 1)
         args.batch_size = min(args.batch_size, 2)
 
+    args.parallel_workers = bool(
+        torch.cuda.is_available()
+        and torch.cuda.device_count() > 1
+        and not args.sequential_workers
+        and args.ensemble_workers > 1
+    )
+
     set_seed(SEED)
     print("HQDE CBT multi-dataset comparison")
     print(f"Datasets: {', '.join(args.dataset_keys)}")
@@ -845,7 +942,9 @@ def main() -> None:
     print(f"Model: {args.model_name}")
     print(f"Epochs: {args.epochs}")
     print(f"Ensemble workers: {args.ensemble_workers}")
+    print(f"Parallel worker waves: {args.parallel_workers}")
     print(f"Batch size: {args.batch_size}")
+    print(f"Torch CPU threads: {torch.get_num_threads()}")
     print(f"Device: {'cuda' if torch.cuda.is_available() else 'cpu'}")
     print(f"PyTorch: {torch.__version__}")
     try:

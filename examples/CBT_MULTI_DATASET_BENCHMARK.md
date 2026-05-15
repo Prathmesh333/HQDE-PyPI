@@ -75,6 +75,9 @@ Kaggle notebook UI. It is configured for:
 - 4 vCPUs.
 - Single-process DataLoaders for notebook stability.
 - Canonical 10-label CBT mapping by default.
+- Batched pre-tokenization so each split is encoded once, not once per worker
+  per epoch.
+- Parallel worker waves so one worker runs on each T4 at the same time.
 
 Run the dry-run cell first, then the full benchmark cell.
 
@@ -93,6 +96,8 @@ os.environ["HQDE_NUM_EPOCHS"] = "5"
 os.environ["HQDE_MAX_TRAIN_SAMPLES"] = "1000"
 os.environ["HQDE_MAX_EVAL_SAMPLES"] = "300"
 os.environ["HQDE_ENSEMBLE_WORKERS"] = "4"
+os.environ["HQDE_TORCH_NUM_THREADS"] = "1"
+os.environ["HQDE_SEQUENTIAL_WORKERS"] = "0"
 ```
 
 ## Output Files

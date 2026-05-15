@@ -118,7 +118,7 @@ python examples/cbt_multi_dataset_comparison.py --label-mode canonical10 --epoch
 ```
 
 For Kaggle 2xT4, use `examples/cbt_multi_dataset_hqde_kaggle_2xT4.ipynb`.
-It configures 4 HQDE ensemble workers, uses canonical 10-label mapping, and writes the same output tables.
+It configures 4 HQDE ensemble workers, uses canonical 10-label mapping, pre-tokenizes each split once, trains one worker per GPU in parallel waves, and writes the same output tables.
 
 The script writes:
 
