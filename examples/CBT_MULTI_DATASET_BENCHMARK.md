@@ -38,6 +38,18 @@ python examples/cbt_multi_dataset_comparison.py \
 For a longer thesis run, increase `--epochs` and remove the sample caps if the
 Kaggle runtime allows it.
 
+## Kaggle 2xT4 Notebook
+
+Use `examples/cbt_multi_dataset_hqde_kaggle_2xT4.ipynb` when running from the
+Kaggle notebook UI. It is configured for:
+
+- 2 Tesla T4 GPUs.
+- 4 HQDE ensemble workers.
+- 4 vCPUs.
+- Single-process DataLoaders for notebook stability.
+
+Run the dry-run cell first, then the full benchmark cell.
+
 ## Kaggle Notes
 
 Enable internet before running the benchmark so the Hugging Face datasets and

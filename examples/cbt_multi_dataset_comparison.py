@@ -19,6 +19,7 @@ Example:
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import os
 import random
@@ -586,7 +587,7 @@ def run_dataset(spec: DatasetSpec, tokenizer, args) -> dict:
     with (dataset_out / "classification_report.json").open("w", encoding="utf-8") as handle:
         json.dump(report, handle, indent=2)
 
-    return {
+    result = {
         **result_base,
         "status": "completed",
         "best_val_accuracy": round(best_val_accuracy, 4),
@@ -597,6 +598,13 @@ def run_dataset(spec: DatasetSpec, tokenizer, args) -> dict:
         "training_time_sec": round(training_time, 2),
         "peak_cuda_memory_mb": peak_cuda_memory_mb(),
     }
+
+    del workers, train_loader, val_loader, test_loader
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    return result
 
 
 def peak_cuda_memory_mb() -> float:

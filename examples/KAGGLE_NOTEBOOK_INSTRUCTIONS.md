@@ -88,6 +88,9 @@ For a final thesis or paper table, run:
 python examples/cbt_multi_dataset_comparison.py --epochs 5 --max-train-samples 1000 --max-eval-samples 300
 ```
 
+From the Kaggle UI, use `examples/cbt_multi_dataset_hqde_kaggle_2xT4.ipynb`.
+It is preconfigured for 2xT4, 4 HQDE ensemble workers, and 4 vCPUs.
+
 Use `--quick-test --dry-run` first to verify dataset availability and exact
 overlap checks without training:
 

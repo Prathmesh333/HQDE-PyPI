@@ -168,6 +168,8 @@ The notebook keeps a synthetic fallback for offline smoke tests via `HQDE_DATASE
 
 For thesis and paper tables, use [examples/cbt_multi_dataset_comparison.py](examples/cbt_multi_dataset_comparison.py). It runs the same DeBERTa-based HQDE-style ensemble protocol across multiple Hugging Face cognitive-distortion datasets and exports CSV, JSON, and Markdown tables.
 
+A Kaggle-ready 2xT4 notebook is available at [examples/cbt_multi_dataset_hqde_kaggle_2xT4.ipynb](examples/cbt_multi_dataset_hqde_kaggle_2xT4.ipynb). It configures 4 HQDE ensemble workers, downloads the benchmark runner, performs a dry-run split check, then runs the full comparison.
+
 Default dataset keys:
 
 - `danthareja` - `danthareja/cognitive-distortion`

@@ -117,6 +117,9 @@ python examples/cbt_multi_dataset_comparison.py --quick-test --dry-run
 python examples/cbt_multi_dataset_comparison.py --epochs 5 --max-train-samples 1000 --max-eval-samples 300
 ```
 
+For Kaggle 2xT4, use `examples/cbt_multi_dataset_hqde_kaggle_2xT4.ipynb`.
+It configures 4 HQDE ensemble workers and writes the same output tables.
+
 The script writes:
 
 - `benchmark_outputs/cbt_multi_dataset/cbt_multi_dataset_comparison.csv`
