@@ -62,10 +62,13 @@ Until dict-batch support is implemented in `hqde/core/hqde_system.py`, do not do
 
 ## Kaggle Notebook Features
 
-The synthetic notebook:
+The Kaggle notebook:
 
-- Generates 100 toy CBT-style samples.
-- Splits data into train/validation/test sets.
+- Loads `danthareja/cognitive-distortion` from Hugging Face by default.
+- Uses the dataset's label metadata to configure the classifier dynamically.
+- Deduplicates exact `(text, label)` pairs before splitting.
+- Checks exact text overlap across train/validation/test sets.
+- Keeps a generated synthetic dataset only as an offline smoke-test fallback.
 - Loads `microsoft/deberta-v3-base`.
 - Creates multiple workers with different dropout and learning-rate settings.
 - Averages worker logits for ensemble prediction.
@@ -77,7 +80,7 @@ The synthetic notebook:
 ## Running the Kaggle Notebook
 
 1. Upload `examples/cbt_deberta_hqde_kaggle.ipynb` to Kaggle.
-2. Enable a GPU accelerator if available.
+2. Enable internet and a GPU accelerator if available.
 3. Run all cells in order.
 
 For smoke mode:
@@ -87,13 +90,21 @@ import os
 os.environ["HQDE_QUICK_TEST"] = "1"
 ```
 
+For offline synthetic fallback:
+
+```python
+import os
+os.environ["HQDE_DATASET_SOURCE"] = "synthetic"
+```
+
 ## Reporting Results
 
 When reporting results:
 
 - State which notebook/script was used.
-- State whether the dataset was synthetic or real.
+- State the dataset source, for example `danthareja/cognitive-distortion`.
 - Include seed, hardware, GPU count, package versions, and runtime.
+- Include the printed exact-overlap checks.
 - Save the classification report and confusion matrix.
 - Do not cite toy synthetic data as clinical evidence.
 

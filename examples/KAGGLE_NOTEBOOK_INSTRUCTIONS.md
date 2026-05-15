@@ -33,7 +33,7 @@ Set this before the configuration cell. Smoke mode uses fewer workers, shorter s
 
 1. Imports dependencies and prints runtime hardware.
 2. Builds a configuration from detected hardware.
-3. Generates a synthetic CBT-style dataset.
+3. Loads `danthareja/cognitive-distortion` from Hugging Face by default.
 4. Tokenizes text with a HuggingFace tokenizer.
 5. Defines a DeBERTa classifier.
 6. Defines ensemble workers that pass `input_ids` and `attention_mask`.
@@ -52,6 +52,7 @@ The final cell reports:
 - Per-class accuracy.
 - Individual worker performance.
 - Confusion matrix path.
+- Exact text overlap counts for train/validation/test splits.
 
 This document intentionally does not provide fixed expected accuracy. Results depend on hardware, random seed, package versions, and dataset quality.
 
@@ -60,6 +61,8 @@ This document intentionally does not provide fixed expected accuracy. Results de
 - Full DeBERTa training should use GPU.
 - CPU mode is mainly for smoke tests.
 - If you get CUDA out-of-memory, reduce `batch_size`, `max_length`, or `num_workers`.
+- Kaggle internet must be enabled for the default Hugging Face dataset path.
+- Use `HQDE_DATASET_SOURCE=synthetic` only for offline runtime checks.
 
 ## Thesis Reporting Notes
 
@@ -67,8 +70,9 @@ For thesis use, record:
 
 - Notebook filename.
 - Git commit hash.
-- Dataset source and whether it is synthetic.
+- Dataset source, for example `danthareja/cognitive-distortion`.
 - Train/validation/test split.
+- Exact-overlap check output.
 - Random seed.
 - Hardware and GPU count.
 - Package versions.

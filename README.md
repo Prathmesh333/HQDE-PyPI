@@ -159,8 +159,10 @@ It now supports:
 - Dynamic device selection instead of hard-coded `cuda:0` and `cuda:1`.
 - Safe AMP usage only on CUDA.
 - `HQDE_QUICK_TEST=1` for short smoke runs.
+- Hugging Face dataset loading via `danthareja/cognitive-distortion` by default.
+- Exact-text overlap checks across train, validation, and test splits.
 
-The notebook uses a generated 100-sample toy dataset. Treat its metrics as demonstration output, not clinical evidence or a benchmark.
+The notebook keeps a synthetic fallback for offline smoke tests via `HQDE_DATASET_SOURCE=synthetic`. Treat synthetic fallback metrics as runtime validation only, not clinical evidence or a benchmark.
 
 ## Project Layout
 
