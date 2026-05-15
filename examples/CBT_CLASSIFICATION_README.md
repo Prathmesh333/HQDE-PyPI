@@ -108,6 +108,29 @@ When reporting results:
 - Save the classification report and confusion matrix.
 - Do not cite toy synthetic data as clinical evidence.
 
+## Multi-Dataset Thesis Table
+
+For a comparison table across datasets, use:
+
+```bash
+python examples/cbt_multi_dataset_comparison.py --quick-test --dry-run
+python examples/cbt_multi_dataset_comparison.py --epochs 5 --max-train-samples 1000 --max-eval-samples 300
+```
+
+The script writes:
+
+- `benchmark_outputs/cbt_multi_dataset/cbt_multi_dataset_comparison.csv`
+- `benchmark_outputs/cbt_multi_dataset/cbt_multi_dataset_comparison.json`
+- `benchmark_outputs/cbt_multi_dataset/cbt_multi_dataset_comparison.md`
+
+The default rows are:
+
+- `danthareja/cognitive-distortion`
+- `halilbabacan/cognitive_distortions_gpt4`
+- `elliott-leow/cognitive_distortion_validation`
+
+Report these as separate rows because they have different label spaces and data-collection methods.
+
 ## Next Code Improvement
 
 The next framework improvement should be core dict-batch support for:

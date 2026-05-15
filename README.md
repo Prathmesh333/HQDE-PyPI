@@ -164,6 +164,30 @@ It now supports:
 
 The notebook keeps a synthetic fallback for offline smoke tests via `HQDE_DATASET_SOURCE=synthetic`. Treat synthetic fallback metrics as runtime validation only, not clinical evidence or a benchmark.
 
+## CBT Multi-Dataset Comparison
+
+For thesis and paper tables, use [examples/cbt_multi_dataset_comparison.py](examples/cbt_multi_dataset_comparison.py). It runs the same DeBERTa-based HQDE-style ensemble protocol across multiple Hugging Face cognitive-distortion datasets and exports CSV, JSON, and Markdown tables.
+
+Default dataset keys:
+
+- `danthareja` - `danthareja/cognitive-distortion`
+- `halil-gpt4` - `halilbabacan/cognitive_distortions_gpt4`
+- `elliott-validation` - `elliott-leow/cognitive_distortion_validation`
+
+Quick dataset/split check:
+
+```bash
+python examples/cbt_multi_dataset_comparison.py --quick-test --dry-run
+```
+
+Full run example:
+
+```bash
+python examples/cbt_multi_dataset_comparison.py --epochs 5 --max-train-samples 1000 --max-eval-samples 300
+```
+
+See [examples/CBT_MULTI_DATASET_BENCHMARK.md](examples/CBT_MULTI_DATASET_BENCHMARK.md) for reporting guidance.
+
 ## Project Layout
 
 ```text

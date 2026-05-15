@@ -79,3 +79,21 @@ For thesis use, record:
 - Full output metrics.
 
 Do not present synthetic toy-data metrics as a production or clinical result.
+
+## Multi-Dataset Comparison
+
+For a final thesis or paper table, run:
+
+```bash
+python examples/cbt_multi_dataset_comparison.py --epochs 5 --max-train-samples 1000 --max-eval-samples 300
+```
+
+Use `--quick-test --dry-run` first to verify dataset availability and exact
+overlap checks without training:
+
+```bash
+python examples/cbt_multi_dataset_comparison.py --quick-test --dry-run
+```
+
+The script exports CSV, JSON, and Markdown tables under
+`benchmark_outputs/cbt_multi_dataset/`.
