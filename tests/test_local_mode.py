@@ -48,6 +48,23 @@ class TinyBNModel(nn.Module):
         return self.head(x)
 
 
+class TinyTextModel(nn.Module):
+    def __init__(self, vocab_size: int = 32, num_classes: int = 2, hidden_size: int = 8, dropout_rate: float = 0.0):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, hidden_size, padding_idx=0)
+        self.dropout = nn.Dropout(dropout_rate)
+        self.head = nn.Linear(hidden_size, num_classes)
+
+    def forward(self, input_ids, attention_mask=None):
+        encoded = self.embedding(input_ids)
+        if attention_mask is not None:
+            mask = attention_mask.unsqueeze(-1).to(encoded.dtype)
+            pooled = (encoded * mask).sum(dim=1) / mask.sum(dim=1).clamp_min(1.0)
+        else:
+            pooled = encoded.mean(dim=1)
+        return self.head(self.dropout(pooled))
+
+
 class LocalModeTests(unittest.TestCase):
     def _build_loader(self):
         return [
@@ -416,6 +433,42 @@ class LocalModeTests(unittest.TestCase):
         try:
             metrics = system.train(loader, num_epochs=1)
             self.assertEqual(len(metrics["epoch_history"]), 1)
+        finally:
+            system.cleanup()
+
+    def test_transformer_style_dict_batches_train_evaluate_and_predict(self):
+        loader = [
+            {
+                "input_ids": torch.randint(1, 24, (6, 5)),
+                "attention_mask": torch.ones(6, 5, dtype=torch.long),
+                "labels": torch.randint(0, 2, (6,)),
+            },
+            {
+                "input_ids": torch.randint(1, 24, (6, 5)),
+                "attention_mask": torch.ones(6, 5, dtype=torch.long),
+                "labels": torch.randint(0, 2, (6,)),
+            },
+        ]
+        system = create_hqde_system(
+            TinyTextModel,
+            {"vocab_size": 32, "num_classes": 2},
+            num_workers=2,
+            training_config={
+                "use_amp": False,
+                "ensemble_mode": "independent",
+                "batch_assignment": "split",
+                "prediction_aggregation": "mean",
+            },
+        )
+        try:
+            metrics = system.train(loader, num_epochs=1, validation_loader=loader)
+            self.assertIn("final_val_accuracy", metrics)
+
+            eval_metrics = system.evaluate(loader)
+            self.assertEqual(eval_metrics["num_samples"], 12)
+
+            predictions = system.predict(loader)
+            self.assertEqual(tuple(predictions.shape), (12, 2))
         finally:
             system.cleanup()
 

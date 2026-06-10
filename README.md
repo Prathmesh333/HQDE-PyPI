@@ -4,7 +4,7 @@
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.x-red.svg)](https://pytorch.org/)
 [![Ray](https://img.shields.io/badge/Ray-optional-green.svg)](https://ray.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.1.12-brightgreen.svg)](https://pypi.org/project/hqde/)
+[![Version](https://img.shields.io/badge/version-0.1.13-brightgreen.svg)](https://pypi.org/project/hqde/)
 
 HQDE is a PyTorch research framework for scalable ensemble learning. It provides a common training API for multiple model replicas, optional Ray-backed workers, epoch-level FedAvg-style synchronization, adaptive delta quantization, and quantum-inspired aggregation utilities.
 

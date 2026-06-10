@@ -71,6 +71,37 @@ VALID_PREDICTION_AGGREGATIONS = {"efficiency_weighted", "mean"}
 VALID_SERVER_OPTIMIZERS = {"mean", "fedadam"}
 VALID_FEDERATED_NORMALIZATIONS = {"shared", "local_bn"}
 VALID_COMPILE_MODES = {"default", "reduce-overhead", "max-autotune"}
+PRIMARY_BATCH_TARGET_KEYS = ("labels", "targets", "label", "target")
+
+
+def _is_batch_target_key(key: str) -> bool:
+    key = str(key).lower()
+    return key in PRIMARY_BATCH_TARGET_KEYS or key.endswith("_labels") or key.endswith("_targets")
+
+
+def _batch_data_without_targets(batch: Dict[str, Any]) -> Dict[str, Any]:
+    return {key: value for key, value in batch.items() if not _is_batch_target_key(key)}
+
+
+def _split_supervised_batch(batch):
+    if isinstance(batch, dict):
+        target_key = next((key for key in PRIMARY_BATCH_TARGET_KEYS if key in batch), None)
+        if target_key is None:
+            raise ValueError("Supervised dict batches must include a labels or targets tensor")
+        return _batch_data_without_targets(batch), batch[target_key]
+
+    if isinstance(batch, (list, tuple)) and len(batch) >= 2:
+        return batch[0], batch[1]
+
+    raise ValueError("Training batches must contain at least (data, targets)")
+
+
+def _prediction_data_from_batch(batch):
+    if isinstance(batch, dict):
+        return _batch_data_without_targets(batch)
+    if isinstance(batch, (list, tuple)):
+        return batch[0]
+    return batch
 
 
 def validate_training_config(training_config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -532,6 +563,30 @@ class _EnsembleWorkerBase:
             return float(self.optimizer.param_groups[0]["lr"])
         return float(self.learning_rate)
 
+    def _move_to_device(self, value):
+        if torch.is_tensor(value):
+            return value.to(self.device, non_blocking=True)
+        if isinstance(value, dict):
+            return {key: self._move_to_device(item) for key, item in value.items()}
+        if isinstance(value, tuple):
+            return tuple(self._move_to_device(item) for item in value)
+        if isinstance(value, list):
+            return [self._move_to_device(item) for item in value]
+        return value
+
+    def _prepare_model_input(self, data_batch):
+        data_batch = self._move_to_device(data_batch)
+        if torch.is_tensor(data_batch) and self.device.type == "cuda" and data_batch.ndim == 4:
+            return data_batch.contiguous(memory_format=torch.channels_last)
+        return data_batch
+
+    def _forward_model(self, data_batch):
+        if isinstance(data_batch, dict):
+            return self.model(**data_batch)
+        if isinstance(data_batch, (list, tuple)):
+            return self.model(*data_batch)
+        return self.model(data_batch)
+
     def train_step(self, data_batch, targets=None):
         """Run a single training step and return batch metrics."""
         if data_batch is None or targets is None:
@@ -540,10 +595,8 @@ class _EnsembleWorkerBase:
             raise RuntimeError("Worker training has not been initialized. Call setup_training first.")
 
         self.model.train()
-        data_batch = data_batch.to(self.device, non_blocking=True)
+        data_batch = self._prepare_model_input(data_batch)
         targets = targets.to(self.device, non_blocking=True)
-        if self.device.type == "cuda" and data_batch.ndim == 4:
-            data_batch = data_batch.contiguous(memory_format=torch.channels_last)
 
         amp_enabled = self.scaler is not None and self.device.type == "cuda"
         autocast_context = (
@@ -554,7 +607,7 @@ class _EnsembleWorkerBase:
 
         self.optimizer.zero_grad(set_to_none=True)
         with autocast_context:
-            outputs = self.model(data_batch)
+            outputs = self._forward_model(data_batch)
             loss = self.criterion(outputs, targets)
 
         clip_norm = float(self.training_config.get("gradient_clip_norm", 1.0))
@@ -628,12 +681,10 @@ class _EnsembleWorkerBase:
     def predict(self, data_batch):
         """Make predictions on data batch."""
         self.model.eval()
-        data_batch = data_batch.to(self.device, non_blocking=True)
-        if self.device.type == "cuda" and data_batch.ndim == 4:
-            data_batch = data_batch.contiguous(memory_format=torch.channels_last)
+        data_batch = self._prepare_model_input(data_batch)
 
         with torch.no_grad():
-            outputs = self.model(data_batch)
+            outputs = self._forward_model(data_batch)
         return outputs.detach().cpu()
 
     def get_checkpoint(self):
@@ -754,15 +805,26 @@ class DistributedEnsembleManager:
             return [1.0] * len(self.workers)
         return sample_counts
 
-    def _build_worker_batches(self, data: torch.Tensor, targets: torch.Tensor):
+    def _split_batch_data(self, data, chunks: int):
+        if torch.is_tensor(data):
+            return list(torch.tensor_split(data, chunks, dim=0))
+        if isinstance(data, dict):
+            split_values = {key: self._split_batch_data(value, chunks) for key, value in data.items()}
+            return [
+                {key: value_chunks[index] for key, value_chunks in split_values.items()}
+                for index in range(chunks)
+            ]
+        return [data for _ in range(chunks)]
+
+    def _build_worker_batches(self, data, targets: torch.Tensor):
         batch_assignment = str(self.training_config.get("batch_assignment", "replicate")).lower()
         if batch_assignment == "split":
-            data_chunks = torch.tensor_split(data, self.num_workers, dim=0)
+            data_chunks = self._split_batch_data(data, self.num_workers)
             target_chunks = torch.tensor_split(targets, self.num_workers, dim=0)
             return [
                 (data_chunk, target_chunk)
                 for data_chunk, target_chunk in zip(data_chunks, target_chunks)
-                if data_chunk.size(0) > 0
+                if target_chunk.size(0) > 0
             ]
         return [(data, targets) for _ in range(self.num_workers)]
 
@@ -982,10 +1044,7 @@ class DistributedEnsembleManager:
 
         with torch.no_grad():
             for batch in data_loader:
-                if not isinstance(batch, (list, tuple)) or len(batch) < 2:
-                    raise ValueError("Evaluation batches must contain at least (data, targets)")
-
-                data, targets = batch[0], batch[1]
+                data, targets = _split_supervised_batch(batch)
                 predictions = self.predict_batch(
                     data,
                     aggregation_mode=aggregation_mode,
@@ -1083,10 +1142,7 @@ class DistributedEnsembleManager:
             worker_round_samples = [0.0] * self.num_workers
 
             for batch in data_loader:
-                if not isinstance(batch, (list, tuple)) or len(batch) < 2:
-                    raise ValueError("Training batches must contain at least (data, targets)")
-
-                data, targets = batch[0], batch[1]
+                data, targets = _split_supervised_batch(batch)
                 worker_batches = self._build_worker_batches(data, targets)
                 active_workers = self.workers[: len(worker_batches)]
                 calls = [
@@ -1282,7 +1338,7 @@ class HQDESystem:
                 iterable = data_loader
 
             for batch in iterable:
-                data = batch[0] if isinstance(batch, (list, tuple)) else batch
+                data = _prediction_data_from_batch(batch)
                 ensemble_prediction = self.ensemble_manager.predict_batch(
                     data,
                     aggregation_mode=aggregation_mode,
